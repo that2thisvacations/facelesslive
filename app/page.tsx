@@ -1,7 +1,7 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import { Bot, Check, ChevronLeft, ChevronRight, Package, Radio, Sparkles } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { Bot, Check, ChevronLeft, ChevronRight, LoaderCircle, Package, Radio, Save, Sparkles } from "lucide-react";
 
 const steps = ["Product", "AI Host", "Script", "Stream", "Launch"];
 const products = [
@@ -15,6 +15,7 @@ const hosts = [
   { id: "expert", name: "Product Expert", style: "Calm demonstration host", initials: "PE" },
 ];
 const layouts = ["Host + Product", "Product Focus", "Offer Countdown"];
+const DRAFT_KEY = "facelesslive-stream-draft";
 
 export default function Home() {
   const [step, setStep] = useState(0);
@@ -22,16 +23,59 @@ export default function Home() {
   const [hostId, setHostId] = useState(hosts[0].id);
   const [layout, setLayout] = useState(layouts[0]);
   const [script, setScript] = useState("");
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [message, setMessage] = useState("");
 
   const product = useMemo(() => products.find((item) => item.id === productId) ?? products[0], [productId]);
   const host = useMemo(() => hosts.find((item) => item.id === hostId) ?? hosts[0], [hostId]);
 
-  function generateScript() {
-    setScript(`Stop scrolling. This ${product.name.toLowerCase()} makes everyday life easier without adding another complicated gadget to your routine. Watch how quickly it works, see the details up close, and tap the product before today’s featured offer ends.`);
+  useEffect(() => {
+    const saved = window.localStorage.getItem(DRAFT_KEY);
+    if (!saved) return;
+    try {
+      const draft = JSON.parse(saved) as { productId?: string; hostId?: string; layout?: string; script?: string };
+      if (draft.productId) setProductId(draft.productId);
+      if (draft.hostId) setHostId(draft.hostId);
+      if (draft.layout) setLayout(draft.layout);
+      if (draft.script) setScript(draft.script);
+      setMessage("Saved draft restored");
+    } catch {
+      window.localStorage.removeItem(DRAFT_KEY);
+    }
+  }, []);
+
+  async function generateScript() {
+    setIsGenerating(true);
+    setMessage("");
+    try {
+      const response = await fetch("/api/scripts/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          productName: product.name,
+          productPrice: product.price,
+          hostStyle: host.style,
+          tone: hostId === "professor" ? "educational" : hostId === "trend" ? "energetic" : "demonstration",
+        }),
+      });
+      const data = (await response.json()) as { script?: string; error?: string };
+      if (!response.ok || !data.script) throw new Error(data.error || "Script generation failed.");
+      setScript(data.script);
+      setMessage("Fresh sales script generated");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Script generation failed.");
+    } finally {
+      setIsGenerating(false);
+    }
   }
 
-  function next() {
-    if (step === 2 && !script) generateScript();
+  function saveDraft() {
+    window.localStorage.setItem(DRAFT_KEY, JSON.stringify({ productId, hostId, layout, script }));
+    setMessage("Draft saved on this device");
+  }
+
+  async function next() {
+    if (step === 2 && !script) await generateScript();
     setStep((current) => Math.min(current + 1, steps.length - 1));
   }
 
@@ -39,7 +83,7 @@ export default function Home() {
     <main>
       <header className="topbar">
         <div className="brand"><span className="brandMark">F</span><span>FacelessLive</span></div>
-        <span className="buildBadge">MVP BUILDER</span>
+        <div className="headerActions"><span className="saveMessage">{message}</span><button className="ghostButton compact" onClick={saveDraft}><Save size={16} /> Save Draft</button><span className="buildBadge">COMMERCE CORE</span></div>
       </header>
 
       <section className="builderShell">
@@ -72,8 +116,8 @@ export default function Home() {
               <div className="choiceGrid">{hosts.map((item) => <button key={item.id} onClick={() => setHostId(item.id)} className={hostId === item.id ? "choiceCard selected" : "choiceCard"}><span className="avatar">{item.initials}</span><strong>{item.name}</strong><span>{item.style}</span></button>)}</div>
             </SelectionStep>}
 
-            {step === 2 && <SelectionStep title="Generate the sales script" subtitle="Start with AI copy, then edit the exact words your host will say.">
-              <button className="generateButton" onClick={generateScript}><Sparkles size={18} /> Generate script</button>
+            {step === 2 && <SelectionStep title="Generate the sales script" subtitle="Create server-generated copy, then edit the exact words your host will say.">
+              <button className="generateButton" onClick={generateScript} disabled={isGenerating}>{isGenerating ? <LoaderCircle className="spin" size={18} /> : <Sparkles size={18} />} {isGenerating ? "Generating..." : "Generate script"}</button>
               <textarea value={script} onChange={(event) => setScript(event.target.value)} placeholder="Your livestream script will appear here..." />
             </SelectionStep>}
 
@@ -90,7 +134,7 @@ export default function Home() {
 
           <footer className="wizardFooter">
             <button className="ghostButton" disabled={step === 0} onClick={() => setStep((current) => Math.max(current - 1, 0))}><ChevronLeft size={18} /> Back</button>
-            {step < steps.length - 1 && <button className="primaryButton" onClick={next}>Continue <ChevronRight size={18} /></button>}
+            {step < steps.length - 1 && <button className="primaryButton" onClick={next} disabled={isGenerating}>Continue <ChevronRight size={18} /></button>}
           </footer>
         </section>
       </section>
