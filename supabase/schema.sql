@@ -72,12 +72,29 @@ create table if not exists public.stream_jobs (
   updated_at timestamptz not null default now()
 );
 
+create table if not exists public.live_events (
+  id uuid primary key default gen_random_uuid(),
+  owner_id uuid not null references auth.users(id) on delete cascade,
+  stream_job_id uuid not null references public.stream_jobs(id) on delete cascade,
+  source text not null default 'manual',
+  event_type text not null default 'comment' check (event_type in ('comment','question','reaction')),
+  viewer_name text,
+  message text not null,
+  response_text text,
+  status text not null default 'queued' check (status in ('queued','displayed','error','ignored')),
+  error_message text,
+  displayed_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
 alter table public.profiles enable row level security;
 alter table public.products enable row level security;
 alter table public.stream_drafts enable row level security;
 alter table public.broadcast_destinations enable row level security;
 alter table public.presenter_jobs enable row level security;
 alter table public.stream_jobs enable row level security;
+alter table public.live_events enable row level security;
 
 drop policy if exists "profiles_owner_access" on public.profiles;
 drop policy if exists "products_owner_access" on public.products;
@@ -85,6 +102,7 @@ drop policy if exists "stream_drafts_owner_access" on public.stream_drafts;
 drop policy if exists "broadcast_destinations_owner_access" on public.broadcast_destinations;
 drop policy if exists "presenter_jobs_owner_access" on public.presenter_jobs;
 drop policy if exists "stream_jobs_owner_access" on public.stream_jobs;
+drop policy if exists "live_events_owner_access" on public.live_events;
 
 create policy "profiles_owner_access" on public.profiles for all using (auth.uid() = id) with check (auth.uid() = id);
 create policy "products_owner_access" on public.products for all using (auth.uid() = owner_id) with check (auth.uid() = owner_id);
@@ -92,3 +110,4 @@ create policy "stream_drafts_owner_access" on public.stream_drafts for all using
 create policy "broadcast_destinations_owner_access" on public.broadcast_destinations for all using (auth.uid() = owner_id) with check (auth.uid() = owner_id);
 create policy "presenter_jobs_owner_access" on public.presenter_jobs for all using (auth.uid() = owner_id) with check (auth.uid() = owner_id);
 create policy "stream_jobs_owner_access" on public.stream_jobs for all using (auth.uid() = owner_id) with check (auth.uid() = owner_id);
+create policy "live_events_owner_access" on public.live_events for all using (auth.uid() = owner_id) with check (auth.uid() = owner_id);
