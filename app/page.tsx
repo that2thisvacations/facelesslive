@@ -6,6 +6,7 @@ import { Bot, Check, ChevronLeft, ChevronRight, LoaderCircle, Package, Radio, Sa
 import { AuthPanel } from "@/components/auth-panel";
 import { PrintifyPicker } from "@/components/printify-picker";
 import { RtmpPanel, type RtmpConfig } from "@/components/rtmp-panel";
+import { StreamLaunchPanel } from "@/components/stream-launch-panel";
 import { getSupabaseBrowser } from "@/lib/supabase-browser";
 
 const steps = ["Product", "AI Host", "Script", "Stream", "Launch"];
@@ -21,7 +22,6 @@ const hosts = [
 ];
 const layouts = ["Host + Product", "Product Focus", "Offer Countdown"];
 const DRAFT_KEY = "facelesslive-stream-draft";
-
 type ProductChoice = { id: string; name: string; price: string; detail: string };
 
 export default function Home() {
@@ -91,19 +91,18 @@ export default function Home() {
   async function next() { if (step === 2 && !script) await generateScript(); setStep((current) => Math.min(current + 1, steps.length - 1)); }
 
   return <main>
-    <header className="topbar"><div className="brand"><span className="brandMark">F</span><span>FacelessLive</span></div><div className="headerActions"><span className="saveMessage">{message}</span><button className="ghostButton compact" onClick={saveDraft}><Save size={16}/> Save Draft</button><span className="buildBadge">CLOUD COMMERCE</span></div></header>
+    <header className="topbar"><div className="brand"><span className="brandMark">F</span><span>FacelessLive</span></div><div className="headerActions"><span className="saveMessage">{message}</span><button className="ghostButton compact" onClick={saveDraft}><Save size={16}/> Save Draft</button><span className="buildBadge">STREAM STUDIO</span></div></header>
     <section className="accountStrip"><AuthPanel onUser={setUser}/></section>
-
     <section className="builderShell">
-      <aside className="builderIntro"><p className="eyebrow">CREATE A FACELESS STREAM</p><h1>Build the show.<br/><span>Skip the camera.</span></h1><p className="heroCopy">Choose a product, assign an AI host, generate the selling script, configure a destination, and prepare a launch-ready stream.</p><div className="summaryCard"><span>Current build</span><strong>{product.name}</strong><small>{host.name} · {layout}</small></div></aside>
+      <aside className="builderIntro"><p className="eyebrow">CREATE A FACELESS STREAM</p><h1>Build the show.<br/><span>Skip the camera.</span></h1><p className="heroCopy">Choose a product, assign an AI host, generate the selling script, configure a destination, preview the AI voice, and create the broadcast job.</p><div className="summaryCard"><span>Current build</span><strong>{product.name}</strong><small>{host.name} · {layout}</small></div></aside>
       <section className="wizardPanel">
         <div className="stepRail">{steps.map((label, index) => <button className={index === step ? "step active" : index < step ? "step done" : "step"} key={label} onClick={() => setStep(index)}><span>{index < step ? <Check size={15}/> : index + 1}</span>{label}</button>)}</div>
         <div className="stepContent">
           {step === 0 && <SelectionStep title="Select a product" subtitle="Choose a sample product or load products from Printify."><div className="choiceGrid">{products.map((item) => <button key={item.id} onClick={() => setProductId(item.id)} className={productId === item.id ? "choiceCard selected" : "choiceCard"}><Package size={23}/><strong>{item.name}</strong><span>{item.detail}</span><b>{item.price}</b></button>)}</div><PrintifyPicker onSelect={addPrintifyProduct}/></SelectionStep>}
           {step === 1 && <SelectionStep title="Choose your AI host" subtitle="Match the presenter personality to the product and audience."><div className="choiceGrid">{hosts.map((item) => <button key={item.id} onClick={() => setHostId(item.id)} className={hostId === item.id ? "choiceCard selected" : "choiceCard"}><span className="avatar">{item.initials}</span><strong>{item.name}</strong><span>{item.style}</span></button>)}</div></SelectionStep>}
-          {step === 2 && <SelectionStep title="Generate the sales script" subtitle="Create server-generated copy, then edit the exact words your host will say."><button className="generateButton" onClick={generateScript} disabled={isGenerating}>{isGenerating ? <LoaderCircle className="spin" size={18}/> : <Sparkles size={18}/>} {isGenerating ? "Generating..." : "Generate script"}</button><textarea value={script} onChange={(event) => setScript(event.target.value)} placeholder="Your livestream script will appear here..."/></SelectionStep>}
+          {step === 2 && <SelectionStep title="Generate the sales script" subtitle="Create AI-backed copy, then edit the exact words your host will say."><button className="generateButton" onClick={generateScript} disabled={isGenerating}>{isGenerating ? <LoaderCircle className="spin" size={18}/> : <Sparkles size={18}/>} {isGenerating ? "Generating..." : "Generate script"}</button><textarea value={script} onChange={(event) => setScript(event.target.value)} placeholder="Your livestream script will appear here..."/></SelectionStep>}
           {step === 3 && <SelectionStep title="Design the stream" subtitle="Choose a layout, then configure a secure broadcast destination."><div className="layoutGrid">{layouts.map((item) => <button key={item} className={layout === item ? "layoutCard selected" : "layoutCard"} onClick={() => setLayout(item)}><div className="miniStage"><span/><i/><b/></div><strong>{item}</strong></button>)}</div><RtmpPanel onSave={saveRtmp}/></SelectionStep>}
-          {step === 4 && <SelectionStep title="Ready for launch" subtitle="Review the stream package before the live broadcast engine is connected."><div className="launchCard"><div className="launchIcon"><Radio size={26}/></div><div><p>STREAM PACKAGE READY</p><h3>{product.name}</h3><span>{host.name} · {layout}</span></div></div><div className="checkList"><span><Check size={16}/> Product selected</span><span><Check size={16}/> AI host assigned</span><span><Check size={16}/> Sales script prepared</span><span><Check size={16}/> Stream layout configured</span></div><button className="primaryButton full" disabled><Radio size={18}/> Broadcast Engine — Next Build</button></SelectionStep>}
+          {step === 4 && <SelectionStep title="Launch Stream Studio" subtitle="Preview the AI voice, choose the destination, and create the broadcast job."><div className="launchCard"><div className="launchIcon"><Radio size={26}/></div><div><p>STREAM PACKAGE READY</p><h3>{product.name}</h3><span>{host.name} · {layout}</span></div></div><div className="checkList"><span><Check size={16}/> Product selected</span><span><Check size={16}/> AI host assigned</span><span><Check size={16}/> Sales script prepared</span><span><Check size={16}/> Stream layout configured</span></div><StreamLaunchPanel user={user} script={script} productName={product.name} hostName={host.name} layout={layout}/></SelectionStep>}
         </div>
         <footer className="wizardFooter"><button className="ghostButton" disabled={step === 0} onClick={() => setStep((current) => Math.max(current - 1, 0))}><ChevronLeft size={18}/> Back</button>{step < steps.length - 1 && <button className="primaryButton" onClick={next} disabled={isGenerating}>Continue <ChevronRight size={18}/></button>}</footer>
       </section>
