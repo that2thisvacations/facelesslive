@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
-import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { createWriteStream, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -9,6 +9,12 @@ const WORKER_TOKEN = process.env.BROADCAST_WORKER_TOKEN || "";
 const APP_URL = (process.env.FACELESSLIVE_APP_URL || "").replace(/\/$/, "");
 const CALLBACK_SECRET = process.env.BROADCAST_CALLBACK_SECRET || "";
 const jobs = new Map();
+const PCM_RATE = 44100;
+const PCM_CHANNELS = 2;
+const PCM_BYTES = 2;
+const FRAME_MS = 20;
+const FRAME_BYTES = Math.round(PCM_RATE * PCM_CHANNELS * PCM_BYTES * FRAME_MS / 1000);
+const SILENCE_FRAME = Buffer.alloc(FRAME_BYTES);
 
 function json(res, status, body) {
   res.writeHead(status, { "Content-Type": "application/json" });
@@ -19,7 +25,7 @@ async function readJson(req) {
   let body = "";
   for await (const chunk of req) {
     body += chunk;
-    if (body.length > 1_000_000) throw new Error("Request body too large.");
+    if (body.length > 3_000_000) throw new Error("Request body too large.");
   }
   return JSON.parse(body || "{}");
 }
@@ -129,6 +135,79 @@ function updateLiveOverlay(jobId, payload) {
   return job.liveOverlay;
 }
 
+function decodeSpeechClip(mp3) {
+  return new Promise((resolve, reject) => {
+    const decoder = spawn("ffmpeg", ["-hide_banner", "-loglevel", "error", "-i", "pipe:0", "-f", "s16le", "-ar", String(PCM_RATE), "-ac", String(PCM_CHANNELS), "pipe:1"], { stdio: ["pipe", "pipe", "pipe"] });
+    const chunks = [];
+    let stderr = "";
+    let size = 0;
+    decoder.stdout.on("data", (chunk) => {
+      size += chunk.length;
+      if (size <= 12_000_000) chunks.push(chunk);
+    });
+    decoder.stderr.on("data", (chunk) => { stderr += String(chunk); });
+    decoder.on("error", reject);
+    decoder.on("exit", (code) => {
+      if (code !== 0) return reject(new Error(stderr.trim() || `Speech decoder exited with ${code}.`));
+      if (!chunks.length) return reject(new Error("Speech clip decoded to empty audio."));
+      resolve(Buffer.concat(chunks));
+    });
+    decoder.stdin.end(mp3);
+  });
+}
+
+function startSpeechFeeder(job) {
+  const writer = createWriteStream(job.speechFifo);
+  job.speechWriter = writer;
+  job.speechQueue = [];
+  job.speechCurrent = null;
+  job.speechOffset = 0;
+  job.speechPlayed = 0;
+
+  writer.on("open", () => {
+    job.speechTimer = setInterval(() => {
+      if (!job.speechCurrent && job.speechQueue.length) {
+        job.speechCurrent = job.speechQueue.shift();
+        job.speechOffset = 0;
+      }
+      let frame = SILENCE_FRAME;
+      if (job.speechCurrent) {
+        const end = Math.min(job.speechOffset + FRAME_BYTES, job.speechCurrent.length);
+        const chunk = job.speechCurrent.subarray(job.speechOffset, end);
+        if (chunk.length === FRAME_BYTES) frame = chunk;
+        else {
+          frame = Buffer.alloc(FRAME_BYTES);
+          chunk.copy(frame);
+        }
+        job.speechOffset = end;
+        if (job.speechOffset >= job.speechCurrent.length) {
+          job.speechCurrent = null;
+          job.speechOffset = 0;
+          job.speechPlayed += 1;
+        }
+      }
+      if (!writer.destroyed) writer.write(frame);
+    }, FRAME_MS);
+  });
+
+  writer.on("error", (error) => console.error("speech_fifo_writer_error", error));
+}
+
+async function enqueueSpeech(jobId, payload) {
+  const job = jobs.get(jobId);
+  if (!job?.process || !job.speechFifo) throw new Error("Active speech-enabled broadcast job not found.");
+  const encoded = String(payload?.audioBase64 || "");
+  if (!encoded) throw new Error("audioBase64 is required.");
+  const mp3 = Buffer.from(encoded, "base64");
+  if (!mp3.length || mp3.length > 1_500_000) throw new Error("Speech clip must be between 1 byte and 1.5 MB.");
+  if ((job.speechQueue?.length || 0) >= 6) throw new Error("Live speech queue is full.");
+  const pcm = await decodeSpeechClip(mp3);
+  job.speechQueue.push(pcm);
+  job.lastSpeechLabel = cleanOverlayText(payload?.label, 100) || null;
+  job.updatedAt = new Date().toISOString();
+  return { queued: job.speechQueue.length + (job.speechCurrent ? 1 : 0), played: job.speechPlayed || 0, label: job.lastSpeechLabel };
+}
+
 async function startJob(payload) {
   const { jobId, destination, presenter, scenePlan, product } = payload || {};
   if (!jobId || !destination?.serverUrl || !destination?.streamKey) throw new Error("jobId and RTMP destination credentials are required.");
@@ -138,37 +217,33 @@ async function startJob(payload) {
   const output = buildOutputUrl(destination.serverUrl, destination.streamKey);
   const scene = buildSceneFilters(jobId, scenePlan);
   const productImageUrl = validHttpsUrl(product?.imageUrl);
-  const args = ["-hide_banner", "-loglevel", "warning", "-re", "-stream_loop", "-1", "-i", presenter.mediaUrl];
+  const speechFifo = join(scene.tempDir, "live-speech.pcm");
+  const fifo = spawnSync("mkfifo", [speechFifo]);
+  if (fifo.status !== 0) throw new Error("Unable to create live speech audio pipe.");
 
+  const args = ["-hide_banner", "-loglevel", "warning", "-re", "-stream_loop", "-1", "-i", presenter.mediaUrl];
+  let speechInputIndex = 1;
   if (productImageUrl) {
     args.push("-loop", "1", "-framerate", "30", "-i", productImageUrl);
-    const complex = [
-      `[0:v]${scene.filter}[base]`,
-      `[1:v]scale=w=360:h=-1:force_original_aspect_ratio=decrease,format=rgba[product]`,
-      `[base][product]overlay=x=W-w-36:y=H-h-230:format=auto[outv]`,
-    ].join(";");
-    args.push("-filter_complex", complex, "-map", "[outv]", "-map", "0:a?");
-  } else {
-    args.push("-vf", scene.filter);
+    speechInputIndex = 2;
   }
+  args.push("-thread_queue_size", "1024", "-f", "s16le", "-ar", String(PCM_RATE), "-ac", String(PCM_CHANNELS), "-i", speechFifo);
 
-  args.push(
-    "-c:v", "libx264",
-    "-preset", "veryfast",
-    "-tune", "zerolatency",
-    "-pix_fmt", "yuv420p",
-    "-r", "30",
-    "-g", "60",
-    "-c:a", "aac",
-    "-b:a", "128k",
-    "-ar", "44100",
-    "-f", "flv",
-    output,
-  );
+  const complex = [];
+  if (productImageUrl) {
+    complex.push(`[0:v]${scene.filter}[base]`);
+    complex.push(`[1:v]scale=w=360:h=-1:force_original_aspect_ratio=decrease,format=rgba[product]`);
+    complex.push(`[base][product]overlay=x=W-w-36:y=H-h-230:format=auto[outv]`);
+  } else {
+    complex.push(`[0:v]${scene.filter}[outv]`);
+  }
+  complex.push(`[0:a][${speechInputIndex}:a]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[outa]`);
+  args.push("-filter_complex", complex.join(";"), "-map", "[outv]", "-map", "[outa]");
+  args.push("-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency", "-pix_fmt", "yuv420p", "-r", "30", "-g", "60", "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-f", "flv", output);
 
   await report(jobId, "starting");
   const child = spawn("ffmpeg", args, { stdio: ["ignore", "ignore", "pipe"] });
-  jobs.set(jobId, {
+  const job = {
     process: child,
     status: "starting",
     startedAt: new Date().toISOString(),
@@ -180,7 +255,16 @@ async function startJob(payload) {
     liveSubtitleFile: scene.liveSubtitleFile,
     liveOverlay: null,
     overlayTimer: null,
-  });
+    speechFifo,
+    speechWriter: null,
+    speechTimer: null,
+    speechQueue: [],
+    speechCurrent: null,
+    speechOffset: 0,
+    speechPlayed: 0,
+  };
+  jobs.set(jobId, job);
+  startSpeechFeeder(job);
 
   let liveReported = false;
   child.stderr.on("data", async (chunk) => {
@@ -196,10 +280,12 @@ async function startJob(payload) {
   child.on("exit", async (code, signal) => {
     const current = jobs.get(jobId) || {};
     if (current.overlayTimer) clearTimeout(current.overlayTimer);
+    if (current.speechTimer) clearInterval(current.speechTimer);
+    if (current.speechWriter && !current.speechWriter.destroyed) current.speechWriter.destroy();
     if (current.tempDir) {
       try { rmSync(current.tempDir, { recursive: true, force: true }); } catch {}
     }
-    jobs.set(jobId, { ...current, process: null, tempDir: null, liveTitleFile: null, liveSubtitleFile: null, overlayTimer: null, exitCode: code, signal });
+    jobs.set(jobId, { ...current, process: null, tempDir: null, liveTitleFile: null, liveSubtitleFile: null, overlayTimer: null, speechWriter: null, speechTimer: null, speechQueue: [], speechCurrent: null, exitCode: code, signal });
     if (code === 0 || signal === "SIGTERM") await report(jobId, "ended");
     else await report(jobId, "error", `FFmpeg exited with code ${code ?? "unknown"}.`);
   });
@@ -217,8 +303,8 @@ const server = createServer(async (req, res) => {
     const id = decodeURIComponent(url.pathname.slice("/jobs/".length));
     const job = jobs.get(id);
     if (!job) return json(res, 404, { error: "Job not found." });
-    const { process: _process, tempDir: _tempDir, liveTitleFile: _liveTitleFile, liveSubtitleFile: _liveSubtitleFile, overlayTimer: _overlayTimer, ...safe } = job;
-    return json(res, 200, { job: safe });
+    const { process: _process, tempDir: _tempDir, liveTitleFile: _liveTitleFile, liveSubtitleFile: _liveSubtitleFile, overlayTimer: _overlayTimer, speechWriter: _speechWriter, speechTimer: _speechTimer, speechQueue: _speechQueue, speechCurrent: _speechCurrent, ...safe } = job;
+    return json(res, 200, { job: { ...safe, speechQueued: (_speechQueue?.length || 0) + (_speechCurrent ? 1 : 0) } });
   }
 
   if (req.method === "POST" && url.pathname === "/broadcast") {
@@ -226,13 +312,7 @@ const server = createServer(async (req, res) => {
     try {
       const payload = await readJson(req);
       await startJob(payload);
-      return json(res, 202, {
-        ok: true,
-        jobId: payload.jobId,
-        status: "starting",
-        scenes: normalizeScenes(payload.scenePlan).length,
-        productImage: Boolean(validHttpsUrl(payload.product?.imageUrl)),
-      });
+      return json(res, 202, { ok: true, jobId: payload.jobId, status: "starting", scenes: normalizeScenes(payload.scenePlan).length, productImage: Boolean(validHttpsUrl(payload.product?.imageUrl)), speechMix: true });
     } catch (error) {
       return json(res, 400, { error: error instanceof Error ? error.message : "Unable to start broadcast." });
     }
@@ -247,6 +327,18 @@ const server = createServer(async (req, res) => {
       return json(res, 202, { ok: true, jobId: id, overlay });
     } catch (error) {
       return json(res, 400, { error: error instanceof Error ? error.message : "Unable to update live overlay." });
+    }
+  }
+
+  if (req.method === "POST" && url.pathname.startsWith("/jobs/") && url.pathname.endsWith("/speech")) {
+    if (!authorized(req)) return json(res, 401, { error: "Unauthorized." });
+    const id = decodeURIComponent(url.pathname.slice("/jobs/".length, -"/speech".length));
+    try {
+      const payload = await readJson(req);
+      const queue = await enqueueSpeech(id, payload);
+      return json(res, 202, { ok: true, jobId: id, queue });
+    } catch (error) {
+      return json(res, 400, { error: error instanceof Error ? error.message : "Unable to queue live speech." });
     }
   }
 
