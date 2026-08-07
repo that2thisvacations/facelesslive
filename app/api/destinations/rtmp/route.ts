@@ -1,15 +1,6 @@
-import { createCipheriv, createHash, randomBytes } from "node:crypto";
 import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
-
-function encryptCredentials(value: object, secret: string) {
-  const key = createHash("sha256").update(secret).digest();
-  const iv = randomBytes(12);
-  const cipher = createCipheriv("aes-256-gcm", key, iv);
-  const encrypted = Buffer.concat([cipher.update(JSON.stringify(value), "utf8"), cipher.final()]);
-  const tag = cipher.getAuthTag();
-  return [iv, tag, encrypted].map((part) => part.toString("base64url")).join(".");
-}
+import { encryptStreamCredentials } from "@/lib/stream-credentials";
 
 export async function POST(request: Request) {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -35,7 +26,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "A valid RTMP server URL and stream key are required." }, { status: 400 });
   }
 
-  const encrypted = encryptCredentials({ serverUrl: data.serverUrl, streamKey: data.streamKey }, secret);
+  const encrypted = encryptStreamCredentials({ serverUrl: data.serverUrl, streamKey: data.streamKey }, secret);
   const admin = createClient(url, serviceKey, { auth: { persistSession: false } });
   const { error } = await admin.from("broadcast_destinations").insert({
     owner_id: authData.user.id,
