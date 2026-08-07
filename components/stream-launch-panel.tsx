@@ -2,12 +2,14 @@
 
 import { useEffect, useMemo, useState } from "react";
 import type { User } from "@supabase/supabase-js";
-import { LoaderCircle, Mic2, Play, Radio, RefreshCw, Video } from "lucide-react";
+import { LoaderCircle, Mic2, Play, Radio, RefreshCw, Square, Video } from "lucide-react";
 import { getSupabaseBrowser } from "@/lib/supabase-browser";
 
 type Destination = { id: string; label: string; provider: string; status: string };
 type Props = { user: User | null; script: string; productName: string; hostName: string; layout: string };
 const VOICES = ["alloy", "ash", "coral", "echo", "nova", "onyx", "sage", "shimmer"];
+const ACTIVE_PRESENTER = new Set(["queued", "generating"]);
+const ACTIVE_STREAM = new Set(["ready", "queued", "starting", "live"]);
 
 export function StreamLaunchPanel({ user, script, productName, hostName, layout }: Props) {
   const [destinations, setDestinations] = useState<Destination[]>([]);
@@ -17,11 +19,14 @@ export function StreamLaunchPanel({ user, script, productName, hostName, layout 
   const [presenterJobId, setPresenterJobId] = useState("");
   const [presenterMediaUrl, setPresenterMediaUrl] = useState("");
   const [presenterStatus, setPresenterStatus] = useState("not-created");
+  const [broadcastJobId, setBroadcastJobId] = useState("");
+  const [broadcastStatus, setBroadcastStatus] = useState("not-started");
   const [message, setMessage] = useState("");
   const [loadingDestinations, setLoadingDestinations] = useState(false);
   const [generatingVoice, setGeneratingVoice] = useState(false);
   const [generatingPresenter, setGeneratingPresenter] = useState(false);
   const [launching, setLaunching] = useState(false);
+  const [stopping, setStopping] = useState(false);
 
   const selectedDestination = useMemo(() => destinations.find((item) => item.id === destinationId) || null, [destinations, destinationId]);
 
@@ -31,6 +36,18 @@ export function StreamLaunchPanel({ user, script, productName, hostName, layout 
   }, [user]);
 
   useEffect(() => () => { if (audioUrl) URL.revokeObjectURL(audioUrl); }, [audioUrl]);
+
+  useEffect(() => {
+    if (!presenterJobId || !ACTIVE_PRESENTER.has(presenterStatus)) return;
+    const timer = window.setInterval(() => void refreshPresenterStatus(), 4000);
+    return () => window.clearInterval(timer);
+  }, [presenterJobId, presenterStatus]);
+
+  useEffect(() => {
+    if (!broadcastJobId || !ACTIVE_STREAM.has(broadcastStatus)) return;
+    const timer = window.setInterval(() => void refreshBroadcastStatus(), 4000);
+    return () => window.clearInterval(timer);
+  }, [broadcastJobId, broadcastStatus]);
 
   async function getToken() {
     const supabase = getSupabaseBrowser();
@@ -88,33 +105,81 @@ export function StreamLaunchPanel({ user, script, productName, hostName, layout 
     finally { setGeneratingPresenter(false); }
   }
 
+  async function refreshPresenterStatus() {
+    if (!presenterJobId) return;
+    try {
+      const { token } = await getToken();
+      const response = await fetch(`/api/presenter/status?id=${encodeURIComponent(presenterJobId)}`, { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "Unable to refresh presenter status.");
+      const status = result.job?.status || presenterStatus;
+      setPresenterStatus(status);
+      if (result.job?.media_url) setPresenterMediaUrl(result.job.media_url);
+      if (status === "ready") setMessage("AI presenter video is ready for broadcast.");
+      if (status === "error") setMessage(result.job?.error_message || "AI presenter generation failed.");
+    } catch (error) { setMessage(error instanceof Error ? error.message : "Unable to refresh presenter status."); }
+  }
+
   async function launchBroadcast() {
     if (!user) return setMessage("Sign in before starting a broadcast.");
     if (!destinationId) return setMessage("Choose a connected broadcast destination.");
     if (!script.trim()) return setMessage("Prepare the sales script before launching.");
-    if (presenterJobId && presenterStatus !== "ready") return setMessage("The AI presenter must be ready before attaching it to the broadcast.");
+    if (!presenterJobId || presenterStatus !== "ready") return setMessage("Generate a ready AI presenter before broadcasting.");
     setLaunching(true); setMessage("");
     try {
       const { token } = await getToken();
       const response = await fetch("/api/broadcast/start", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ destinationId, presenterJobId: presenterStatus === "ready" ? presenterJobId : undefined }),
+        body: JSON.stringify({ destinationId, presenterJobId }),
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || "Unable to create broadcast job.");
+      setBroadcastJobId(result.job?.id || "");
+      setBroadcastStatus(result.job?.status || "ready");
       setMessage(result.message || `Broadcast job created: ${result.job?.status || "ready"}.`);
     } catch (error) { setMessage(error instanceof Error ? error.message : "Unable to create broadcast job."); }
     finally { setLaunching(false); }
   }
 
+  async function refreshBroadcastStatus() {
+    if (!broadcastJobId) return;
+    try {
+      const { supabase } = await getToken();
+      const { data, error } = await supabase.from("stream_jobs").select("status,error_message,updated_at").eq("id", broadcastJobId).single();
+      if (error) throw error;
+      setBroadcastStatus(data.status);
+      if (data.status === "live") setMessage("Stream is LIVE and the broadcast worker is healthy.");
+      if (data.status === "ended") setMessage("Broadcast ended.");
+      if (data.status === "error") setMessage(data.error_message || "Broadcast worker reported an error.");
+    } catch (error) { setMessage(error instanceof Error ? error.message : "Unable to refresh stream health."); }
+  }
+
+  async function stopBroadcast() {
+    if (!broadcastJobId) return;
+    setStopping(true); setMessage("");
+    try {
+      const { token } = await getToken();
+      const response = await fetch("/api/broadcast/stop", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ jobId: broadcastJobId }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "Unable to stop broadcast.");
+      setBroadcastStatus("ended");
+      setMessage("Broadcast stop requested.");
+    } catch (error) { setMessage(error instanceof Error ? error.message : "Unable to stop broadcast."); }
+    finally { setStopping(false); }
+  }
+
   return <div className="launchStudio">
-    <div className="presenterPackage"><div><span>AI PRESENTER PACKAGE</span><strong>{hostName}</strong><small>{productName} · {layout}</small></div><div className="packageStatus">{presenterStatus === "ready" ? "Video Ready" : "Voice Ready"}</div></div>
+    <div className="presenterPackage"><div><span>AI PRESENTER PACKAGE</span><strong>{hostName}</strong><small>{productName} · {layout}</small></div><div className="packageStatus">Presenter: {presenterStatus} · Stream: {broadcastStatus}</div></div>
     <div className="launchControlGrid">
       <div className="integrationCard launchControlCard"><div className="integrationHeader"><Mic2 size={20}/><div><strong>AI Voice Preview</strong><span>Hear the selected presenter script before the stream.</span></div></div><div className="formStack"><select value={voice} onChange={(e) => setVoice(e.target.value)}>{VOICES.map((item) => <option key={item}>{item}</option>)}</select><button className="ghostButton" onClick={previewVoice} disabled={generatingVoice || !script.trim()}>{generatingVoice ? <LoaderCircle className="spin" size={17}/> : <Play size={17}/>} {generatingVoice ? "Generating..." : "Generate Voice Preview"}</button>{audioUrl && <audio className="voicePlayer" controls src={audioUrl}/>}</div></div>
-      <div className="integrationCard launchControlCard"><div className="integrationHeader"><Video size={20}/><div><strong>AI Presenter Video</strong><span>Send the script, host, and voice to the configured avatar provider.</span></div></div><div className="formStack"><button className="ghostButton" onClick={generatePresenter} disabled={generatingPresenter || !user || !script.trim()}>{generatingPresenter ? <LoaderCircle className="spin" size={17}/> : <Video size={17}/>} {generatingPresenter ? "Creating Presenter..." : "Generate AI Presenter"}</button><small className="helperText">Status: {presenterStatus}</small>{presenterMediaUrl && <video className="voicePlayer" controls src={presenterMediaUrl}/>}</div></div>
-      <div className="integrationCard launchControlCard"><div className="integrationHeader"><Radio size={20}/><div><strong>Broadcast Destination</strong><span>Select a connected RTMP destination and create the live job.</span></div></div><div className="formStack"><div className="destinationRow"><select value={destinationId} onChange={(e) => setDestinationId(e.target.value)} disabled={!destinations.length}>{!destinations.length && <option value="">No connected destinations</option>}{destinations.map((item) => <option key={item.id} value={item.id}>{item.label} · {item.provider}</option>)}</select><button className="ghostButton compact" onClick={loadDestinations} disabled={loadingDestinations || !user}>{loadingDestinations ? <LoaderCircle className="spin" size={16}/> : <RefreshCw size={16}/>}</button></div><button className="primaryButton full" onClick={launchBroadcast} disabled={launching || !user || !selectedDestination || !script.trim()}>{launching ? <LoaderCircle className="spin" size={18}/> : <Radio size={18}/>} {launching ? "Creating Broadcast Job..." : "Start Broadcast Job"}</button></div></div>
+      <div className="integrationCard launchControlCard"><div className="integrationHeader"><Video size={20}/><div><strong>AI Presenter Video</strong><span>Generate the avatar video and monitor asynchronous provider status.</span></div></div><div className="formStack"><button className="ghostButton" onClick={generatePresenter} disabled={generatingPresenter || !user || !script.trim()}>{generatingPresenter ? <LoaderCircle className="spin" size={17}/> : <Video size={17}/>} {generatingPresenter ? "Creating Presenter..." : "Generate AI Presenter"}</button><button className="ghostButton" onClick={refreshPresenterStatus} disabled={!presenterJobId || generatingPresenter}><RefreshCw size={16}/> Refresh Presenter Status</button><small className="helperText">Status: {presenterStatus}</small>{presenterMediaUrl && <video className="voicePlayer" controls src={presenterMediaUrl}/>}</div></div>
+      <div className="integrationCard launchControlCard"><div className="integrationHeader"><Radio size={20}/><div><strong>Broadcast & Stream Health</strong><span>Launch RTMP, watch worker status, and stop the active stream.</span></div></div><div className="formStack"><div className="destinationRow"><select value={destinationId} onChange={(e) => setDestinationId(e.target.value)} disabled={!destinations.length}>{!destinations.length && <option value="">No connected destinations</option>}{destinations.map((item) => <option key={item.id} value={item.id}>{item.label} · {item.provider}</option>)}</select><button className="ghostButton compact" onClick={loadDestinations} disabled={loadingDestinations || !user}>{loadingDestinations ? <LoaderCircle className="spin" size={16}/> : <RefreshCw size={16}/>}</button></div><button className="primaryButton full" onClick={launchBroadcast} disabled={launching || !user || !selectedDestination || presenterStatus !== "ready" || ACTIVE_STREAM.has(broadcastStatus)}>{launching ? <LoaderCircle className="spin" size={18}/> : <Radio size={18}/>} {launching ? "Creating Broadcast Job..." : "Start Broadcast"}</button>{broadcastJobId && <button className="ghostButton full" onClick={refreshBroadcastStatus}><RefreshCw size={16}/> Refresh Stream Health</button>}{broadcastJobId && ACTIVE_STREAM.has(broadcastStatus) && <button className="ghostButton full" onClick={stopBroadcast} disabled={stopping}>{stopping ? <LoaderCircle className="spin" size={16}/> : <Square size={16}/>} {stopping ? "Stopping..." : "Stop Broadcast"}</button>}<small className="helperText">Stream status: {broadcastStatus}</small></div></div>
     </div>
-    <p className="launchStatus">{message || "Preview the voice, generate the presenter, confirm the destination, then launch the broadcast job."}</p>
+    <p className="launchStatus">{message || "Preview the voice, generate the presenter, confirm the destination, then launch the broadcast."}</p>
   </div>;
 }
