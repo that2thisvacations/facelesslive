@@ -89,10 +89,23 @@ create table if not exists public.live_events (
   updated_at timestamptz not null default now()
 );
 
+create table if not exists public.live_stream_mappings (
+  id uuid primary key default gen_random_uuid(),
+  owner_id uuid not null references auth.users(id) on delete cascade,
+  platform text not null check (platform in ('tiktok','youtube','facebook','instagram','custom')),
+  external_stream_id text not null,
+  stream_job_id uuid not null references public.stream_jobs(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (owner_id, platform, external_stream_id)
+);
+
 alter table public.live_events add column if not exists external_event_id text;
 create unique index if not exists live_events_source_external_event_uidx
   on public.live_events(source, external_event_id)
   where external_event_id is not null;
+create index if not exists live_stream_mappings_lookup_idx
+  on public.live_stream_mappings(platform, external_stream_id);
 
 alter table public.profiles enable row level security;
 alter table public.products enable row level security;
@@ -101,6 +114,7 @@ alter table public.broadcast_destinations enable row level security;
 alter table public.presenter_jobs enable row level security;
 alter table public.stream_jobs enable row level security;
 alter table public.live_events enable row level security;
+alter table public.live_stream_mappings enable row level security;
 
 drop policy if exists "profiles_owner_access" on public.profiles;
 drop policy if exists "products_owner_access" on public.products;
@@ -109,6 +123,7 @@ drop policy if exists "broadcast_destinations_owner_access" on public.broadcast_
 drop policy if exists "presenter_jobs_owner_access" on public.presenter_jobs;
 drop policy if exists "stream_jobs_owner_access" on public.stream_jobs;
 drop policy if exists "live_events_owner_access" on public.live_events;
+drop policy if exists "live_stream_mappings_owner_access" on public.live_stream_mappings;
 
 create policy "profiles_owner_access" on public.profiles for all using (auth.uid() = id) with check (auth.uid() = id);
 create policy "products_owner_access" on public.products for all using (auth.uid() = owner_id) with check (auth.uid() = owner_id);
@@ -117,3 +132,4 @@ create policy "broadcast_destinations_owner_access" on public.broadcast_destinat
 create policy "presenter_jobs_owner_access" on public.presenter_jobs for all using (auth.uid() = owner_id) with check (auth.uid() = owner_id);
 create policy "stream_jobs_owner_access" on public.stream_jobs for all using (auth.uid() = owner_id) with check (auth.uid() = owner_id);
 create policy "live_events_owner_access" on public.live_events for all using (auth.uid() = owner_id) with check (auth.uid() = owner_id);
+create policy "live_stream_mappings_owner_access" on public.live_stream_mappings for all using (auth.uid() = owner_id) with check (auth.uid() = owner_id);
