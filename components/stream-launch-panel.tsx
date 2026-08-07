@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import type { User } from "@supabase/supabase-js";
-import { Layers, LoaderCircle, Mic2, Play, Radio, RefreshCw, Square, Video } from "lucide-react";
+import { Layers, LoaderCircle, MessageCircle, Mic2, Play, Radio, RefreshCw, Send, Square, Video } from "lucide-react";
 import { getSupabaseBrowser } from "@/lib/supabase-browser";
 
 type Destination = { id: string; label: string; provider: string; status: string };
@@ -26,33 +26,30 @@ export function StreamLaunchPanel({ user, script, productName, hostName, layout 
   const [scenePlan, setScenePlan] = useState<ScenePlan | null>(null);
   const [offerText, setOfferText] = useState("Featured live offer");
   const [cta, setCta] = useState("Tap the product card to shop now");
+  const [viewerName, setViewerName] = useState("");
+  const [liveMessage, setLiveMessage] = useState("");
+  const [eventType, setEventType] = useState<"comment" | "question" | "reaction">("question");
+  const [lastAiResponse, setLastAiResponse] = useState("");
   const [message, setMessage] = useState("");
   const [loadingDestinations, setLoadingDestinations] = useState(false);
   const [generatingVoice, setGeneratingVoice] = useState(false);
   const [generatingPresenter, setGeneratingPresenter] = useState(false);
   const [generatingScenes, setGeneratingScenes] = useState(false);
+  const [sendingEvent, setSendingEvent] = useState(false);
   const [launching, setLaunching] = useState(false);
   const [stopping, setStopping] = useState(false);
 
   const selectedDestination = useMemo(() => destinations.find((item) => item.id === destinationId) || null, [destinations, destinationId]);
+  const liveEventEnabled = Boolean(broadcastJobId && ["starting", "live"].includes(broadcastStatus));
 
-  useEffect(() => {
-    if (!user) { setDestinations([]); setDestinationId(""); return; }
-    void loadDestinations();
-  }, [user]);
-
-  useEffect(() => {
-    setScenePlan(null);
-  }, [productName, layout]);
-
+  useEffect(() => { if (!user) { setDestinations([]); setDestinationId(""); return; } void loadDestinations(); }, [user]);
+  useEffect(() => { setScenePlan(null); }, [productName, layout]);
   useEffect(() => () => { if (audioUrl) URL.revokeObjectURL(audioUrl); }, [audioUrl]);
-
   useEffect(() => {
     if (!presenterJobId || !ACTIVE_PRESENTER.has(presenterStatus)) return;
     const timer = window.setInterval(() => void refreshPresenterStatus(), 4000);
     return () => window.clearInterval(timer);
   }, [presenterJobId, presenterStatus]);
-
   useEffect(() => {
     if (!broadcastJobId || !ACTIVE_STREAM.has(broadcastStatus)) return;
     const timer = window.setInterval(() => void refreshBroadcastStatus(), 4000);
@@ -100,16 +97,10 @@ export function StreamLaunchPanel({ user, script, productName, hostName, layout 
     setGeneratingPresenter(true); setMessage("");
     try {
       const { token } = await getToken();
-      const response = await fetch("/api/presenter/generate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ script, hostId: hostName.toLowerCase().replace(/\s+/g, "-"), hostName, voice, productName }),
-      });
+      const response = await fetch("/api/presenter/generate", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify({ script, hostId: hostName.toLowerCase().replace(/\s+/g, "-"), hostName, voice, productName }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || "Unable to generate AI presenter.");
-      setPresenterJobId(result.job?.id || "");
-      setPresenterStatus(result.job?.status || "queued");
-      setPresenterMediaUrl(result.job?.mediaUrl || "");
+      setPresenterJobId(result.job?.id || ""); setPresenterStatus(result.job?.status || "queued"); setPresenterMediaUrl(result.job?.mediaUrl || "");
       setMessage(result.message || `AI presenter job: ${result.job?.status || "queued"}.`);
     } catch (error) { setMessage(error instanceof Error ? error.message : "Unable to generate AI presenter."); }
     finally { setGeneratingPresenter(false); }
@@ -118,15 +109,10 @@ export function StreamLaunchPanel({ user, script, productName, hostName, layout 
   async function generateScenePlan() {
     setGeneratingScenes(true); setMessage("");
     try {
-      const response = await fetch("/api/scenes/plan", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ productName, layout, offerText, cta }),
-      });
+      const response = await fetch("/api/scenes/plan", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ productName, layout, offerText, cta }) });
       const result = await response.json();
       if (!response.ok || !result.plan) throw new Error(result.error || "Unable to create scene plan.");
-      setScenePlan(result.plan as ScenePlan);
-      setMessage(`${result.plan.scenes.length} timed commerce scenes are ready.`);
+      setScenePlan(result.plan as ScenePlan); setMessage(`${result.plan.scenes.length} timed commerce scenes are ready.`);
     } catch (error) { setMessage(error instanceof Error ? error.message : "Unable to create scene plan."); }
     finally { setGeneratingScenes(false); }
   }
@@ -139,8 +125,7 @@ export function StreamLaunchPanel({ user, script, productName, hostName, layout 
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || "Unable to refresh presenter status.");
       const status = result.job?.status || presenterStatus;
-      setPresenterStatus(status);
-      if (result.job?.media_url) setPresenterMediaUrl(result.job.media_url);
+      setPresenterStatus(status); if (result.job?.media_url) setPresenterMediaUrl(result.job.media_url);
       if (status === "ready") setMessage("AI presenter video is ready for broadcast.");
       if (status === "error") setMessage(result.job?.error_message || "AI presenter generation failed.");
     } catch (error) { setMessage(error instanceof Error ? error.message : "Unable to refresh presenter status."); }
@@ -155,15 +140,10 @@ export function StreamLaunchPanel({ user, script, productName, hostName, layout 
     setLaunching(true); setMessage("");
     try {
       const { token } = await getToken();
-      const response = await fetch("/api/broadcast/start", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ destinationId, presenterJobId, scenePlan }),
-      });
+      const response = await fetch("/api/broadcast/start", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify({ destinationId, presenterJobId, scenePlan }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || "Unable to create broadcast job.");
-      setBroadcastJobId(result.job?.id || "");
-      setBroadcastStatus(result.job?.status || "ready");
+      setBroadcastJobId(result.job?.id || ""); setBroadcastStatus(result.job?.status || "ready");
       setMessage(result.message || `Broadcast job created with ${scenePlan.scenes.length} scenes: ${result.job?.status || "ready"}.`);
     } catch (error) { setMessage(error instanceof Error ? error.message : "Unable to create broadcast job."); }
     finally { setLaunching(false); }
@@ -176,10 +156,29 @@ export function StreamLaunchPanel({ user, script, productName, hostName, layout 
       const { data, error } = await supabase.from("stream_jobs").select("status,error_message,updated_at").eq("id", broadcastJobId).single();
       if (error) throw error;
       setBroadcastStatus(data.status);
-      if (data.status === "live") setMessage("Stream is LIVE with timed commerce overlays.");
+      if (data.status === "live") setMessage("Stream is LIVE with timed scenes and real-time response overlays ready.");
       if (data.status === "ended") setMessage("Broadcast ended.");
       if (data.status === "error") setMessage(data.error_message || "Broadcast worker reported an error.");
     } catch (error) { setMessage(error instanceof Error ? error.message : "Unable to refresh stream health."); }
+  }
+
+  async function sendLiveEvent() {
+    if (!liveEventEnabled || !broadcastJobId) return setMessage("Start the broadcast before sending live events.");
+    if (!liveMessage.trim()) return setMessage("Enter a viewer comment or question first.");
+    setSendingEvent(true); setMessage("");
+    try {
+      const { token } = await getToken();
+      const response = await fetch("/api/live/events", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ streamJobId: broadcastJobId, eventType, viewerName, message: liveMessage }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "Unable to process live event.");
+      setLastAiResponse(result.responseText || ""); setLiveMessage("");
+      setMessage(result.delivery === "displayed" ? "AI response pushed to the live stream overlay." : `Live event queued: ${result.delivery || "queued"}.`);
+    } catch (error) { setMessage(error instanceof Error ? error.message : "Unable to process live event."); }
+    finally { setSendingEvent(false); }
   }
 
   async function stopBroadcast() {
@@ -187,15 +186,10 @@ export function StreamLaunchPanel({ user, script, productName, hostName, layout 
     setStopping(true); setMessage("");
     try {
       const { token } = await getToken();
-      const response = await fetch("/api/broadcast/stop", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ jobId: broadcastJobId }),
-      });
+      const response = await fetch("/api/broadcast/stop", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify({ jobId: broadcastJobId }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || "Unable to stop broadcast.");
-      setBroadcastStatus("ended");
-      setMessage("Broadcast stop requested.");
+      setBroadcastStatus("ended"); setMessage("Broadcast stop requested.");
     } catch (error) { setMessage(error instanceof Error ? error.message : "Unable to stop broadcast."); }
     finally { setStopping(false); }
   }
@@ -207,6 +201,7 @@ export function StreamLaunchPanel({ user, script, productName, hostName, layout 
       <div className="integrationCard launchControlCard"><div className="integrationHeader"><Video size={20}/><div><strong>AI Presenter Video</strong><span>Generate the avatar video and monitor asynchronous provider status.</span></div></div><div className="formStack"><button className="ghostButton" onClick={generatePresenter} disabled={generatingPresenter || !user || !script.trim()}>{generatingPresenter ? <LoaderCircle className="spin" size={17}/> : <Video size={17}/>} {generatingPresenter ? "Creating Presenter..." : "Generate AI Presenter"}</button><button className="ghostButton" onClick={refreshPresenterStatus} disabled={!presenterJobId || generatingPresenter}><RefreshCw size={16}/> Refresh Presenter Status</button><small className="helperText">Status: {presenterStatus}</small>{presenterMediaUrl && <video className="voicePlayer" controls src={presenterMediaUrl}/>}</div></div>
       <div className="integrationCard launchControlCard sceneCard"><div className="integrationHeader"><Layers size={20}/><div><strong>Commerce Scene Orchestration</strong><span>Sequence product, offer, and CTA overlays across the presenter video.</span></div></div><div className="formStack"><input value={offerText} onChange={(e) => { setOfferText(e.target.value); setScenePlan(null); }} placeholder="Featured offer"/><input value={cta} onChange={(e) => { setCta(e.target.value); setScenePlan(null); }} placeholder="Call to action"/><button className="ghostButton" onClick={generateScenePlan} disabled={generatingScenes}>{generatingScenes ? <LoaderCircle className="spin" size={17}/> : <Layers size={17}/>} {generatingScenes ? "Building Scenes..." : "Build Scene Plan"}</button>{scenePlan && <div className="sceneTimeline">{scenePlan.scenes.map((scene) => <div className="sceneChip" key={scene.id}><strong>{scene.title}</strong><span>{scene.start}s–{scene.end}s</span></div>)}</div>}</div></div>
       <div className="integrationCard launchControlCard"><div className="integrationHeader"><Radio size={20}/><div><strong>Broadcast & Stream Health</strong><span>Launch RTMP with the presenter and timed commerce overlays.</span></div></div><div className="formStack"><div className="destinationRow"><select value={destinationId} onChange={(e) => setDestinationId(e.target.value)} disabled={!destinations.length}>{!destinations.length && <option value="">No connected destinations</option>}{destinations.map((item) => <option key={item.id} value={item.id}>{item.label} · {item.provider}</option>)}</select><button className="ghostButton compact" onClick={loadDestinations} disabled={loadingDestinations || !user}>{loadingDestinations ? <LoaderCircle className="spin" size={16}/> : <RefreshCw size={16}/>}</button></div><button className="primaryButton full" onClick={launchBroadcast} disabled={launching || !user || !selectedDestination || presenterStatus !== "ready" || !scenePlan || ACTIVE_STREAM.has(broadcastStatus)}>{launching ? <LoaderCircle className="spin" size={18}/> : <Radio size={18}/>} {launching ? "Creating Broadcast Job..." : "Start Broadcast"}</button>{broadcastJobId && <button className="ghostButton full" onClick={refreshBroadcastStatus}><RefreshCw size={16}/> Refresh Stream Health</button>}{broadcastJobId && ACTIVE_STREAM.has(broadcastStatus) && <button className="ghostButton full" onClick={stopBroadcast} disabled={stopping}>{stopping ? <LoaderCircle className="spin" size={16}/> : <Square size={16}/>} {stopping ? "Stopping..." : "Stop Broadcast"}</button>}<small className="helperText">Stream status: {broadcastStatus}</small></div></div>
+      <div className="integrationCard launchControlCard liveEventCard"><div className="integrationHeader"><MessageCircle size={20}/><div><strong>Live Commerce Response Queue</strong><span>Inject a viewer question, generate a guarded AI answer, and push it to the live overlay.</span></div></div><div className="formStack"><div className="liveEventGrid"><input value={viewerName} onChange={(e) => setViewerName(e.target.value)} placeholder="Viewer name (optional)"/><select value={eventType} onChange={(e) => setEventType(e.target.value as typeof eventType)}><option value="question">Question</option><option value="comment">Comment</option><option value="reaction">Reaction</option></select></div><textarea value={liveMessage} onChange={(e) => setLiveMessage(e.target.value)} placeholder="What did the viewer ask or say?"/><button className="primaryButton full" onClick={sendLiveEvent} disabled={sendingEvent || !liveEventEnabled || !liveMessage.trim()}>{sendingEvent ? <LoaderCircle className="spin" size={17}/> : <Send size={17}/>} {sendingEvent ? "Generating Response..." : "Send AI Live Response"}</button>{lastAiResponse && <div className="aiResponsePreview"><span>AI RESPONSE</span><p>{lastAiResponse}</p></div>}<small className="helperText">Manual event input is available now. Platform comment webhooks can feed this same queue later.</small></div></div>
     </div>
     <p className="launchStatus">{message || "Preview the voice, generate the presenter, build the scene plan, confirm the destination, then launch the broadcast."}</p>
   </div>;
