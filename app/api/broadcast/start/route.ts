@@ -2,8 +2,23 @@ import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
 import { decryptStreamCredentials } from "@/lib/stream-credentials";
 
-type StartRequest = { destinationId?: string; streamDraftId?: string; presenterJobId?: string };
+type Scene = { id?: string; start?: number; end?: number; title?: string; subtitle?: string; position?: string };
+type ScenePlan = { version?: number; layout?: string; scenes?: Scene[] };
+type StartRequest = { destinationId?: string; streamDraftId?: string; presenterJobId?: string; scenePlan?: ScenePlan };
 type RtmpCredentials = { serverUrl: string; streamKey: string };
+
+function sanitizeScenePlan(plan?: ScenePlan): ScenePlan | null {
+  if (!plan?.scenes?.length) return null;
+  const scenes = plan.scenes.slice(0, 8).map((scene, index) => ({
+    id: String(scene.id || `scene-${index + 1}`).slice(0, 40),
+    start: Math.max(0, Number(scene.start || 0)),
+    end: Math.max(0, Number(scene.end || 0)),
+    title: String(scene.title || "").slice(0, 120),
+    subtitle: String(scene.subtitle || "").slice(0, 160),
+    position: scene.position === "top" ? "top" : "lower-third",
+  })).filter((scene) => scene.end > scene.start && (scene.title || scene.subtitle));
+  return scenes.length ? { version: 1, layout: String(plan.layout || "Host + Product").slice(0, 60), scenes } : null;
+}
 
 export async function POST(request: Request) {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -29,6 +44,7 @@ export async function POST(request: Request) {
   catch { return NextResponse.json({ error: "Invalid JSON." }, { status: 400 }); }
 
   if (!body.destinationId) return NextResponse.json({ error: "A broadcast destination is required." }, { status: 400 });
+  const scenePlan = sanitizeScenePlan(body.scenePlan);
 
   const admin = createClient(url, serviceKey, { auth: { persistSession: false } });
   const { data: destination, error: destinationError } = await admin
@@ -75,6 +91,7 @@ export async function POST(request: Request) {
     return NextResponse.json({
       job,
       execution: "not_started",
+      scenePlan,
       message: "Broadcast package is ready. Configure BROADCAST_WORKER_URL to execute RTMP streaming.",
     }, { status: 202 });
   }
@@ -91,13 +108,14 @@ export async function POST(request: Request) {
         provider: destination.provider,
         destination: { serverUrl: credentials.serverUrl, streamKey: credentials.streamKey },
         presenter: presenter ? { jobId: presenter.id, mediaUrl: presenter.media_url } : null,
+        scenePlan,
       }),
       cache: "no-store",
     });
 
     if (!workerResponse.ok) throw new Error(`Broadcast worker returned ${workerResponse.status}.`);
     await admin.from("stream_jobs").update({ status: "starting", updated_at: new Date().toISOString() }).eq("id", job.id);
-    return NextResponse.json({ job: { ...job, status: "starting" }, execution: "dispatched" }, { status: 202 });
+    return NextResponse.json({ job: { ...job, status: "starting" }, execution: "dispatched", scenePlan }, { status: 202 });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unable to dispatch broadcast.";
     await admin.from("stream_jobs").update({ status: "error", error_message: message, updated_at: new Date().toISOString() }).eq("id", job.id);
