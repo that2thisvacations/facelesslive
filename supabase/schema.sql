@@ -30,7 +30,7 @@ create table if not exists public.stream_drafts (
   status text not null default 'draft' check (status in ('draft','ready','scheduled','live','ended')),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
-  foreign key (product_id, owner_id) references public.products(id, owner_id) on delete set null (product_id)
+  foreign key (product_id, owner_id) references public.products(id, owner_id)
 );
 
 create table if not exists public.broadcast_destinations (
