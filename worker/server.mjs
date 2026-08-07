@@ -64,6 +64,13 @@ function cleanOverlayText(value, max = 180) {
   return String(value || "").replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trim().slice(0, max);
 }
 
+function validHttpsUrl(value) {
+  try {
+    const url = new URL(String(value || ""));
+    return url.protocol === "https:" ? url.toString() : null;
+  } catch { return null; }
+}
+
 function buildSceneFilters(jobId, scenePlan) {
   const scenes = normalizeScenes(scenePlan);
   const tempDir = mkdtempSync(join(tmpdir(), `facelesslive-${jobId}-`));
@@ -123,14 +130,28 @@ function updateLiveOverlay(jobId, payload) {
 }
 
 async function startJob(payload) {
-  const { jobId, destination, presenter, scenePlan } = payload || {};
+  const { jobId, destination, presenter, scenePlan, product } = payload || {};
   if (!jobId || !destination?.serverUrl || !destination?.streamKey) throw new Error("jobId and RTMP destination credentials are required.");
   if (!presenter?.mediaUrl) throw new Error("A ready presenter mediaUrl is required for this worker.");
   if (jobs.get(jobId)?.process) throw new Error("Broadcast job is already running.");
 
   const output = buildOutputUrl(destination.serverUrl, destination.streamKey);
   const scene = buildSceneFilters(jobId, scenePlan);
-  const args = ["-hide_banner", "-loglevel", "warning", "-re", "-stream_loop", "-1", "-i", presenter.mediaUrl, "-vf", scene.filter];
+  const productImageUrl = validHttpsUrl(product?.imageUrl);
+  const args = ["-hide_banner", "-loglevel", "warning", "-re", "-stream_loop", "-1", "-i", presenter.mediaUrl];
+
+  if (productImageUrl) {
+    args.push("-loop", "1", "-framerate", "30", "-i", productImageUrl);
+    const complex = [
+      `[0:v]${scene.filter}[base]`,
+      `[1:v]scale=w=360:h=-1:force_original_aspect_ratio=decrease,format=rgba[product]`,
+      `[base][product]overlay=x=W-w-36:y=H-h-230:format=auto[outv]`,
+    ].join(";");
+    args.push("-filter_complex", complex, "-map", "[outv]", "-map", "0:a?");
+  } else {
+    args.push("-vf", scene.filter);
+  }
+
   args.push(
     "-c:v", "libx264",
     "-preset", "veryfast",
@@ -153,6 +174,7 @@ async function startJob(payload) {
     startedAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     scenePlan: { version: scenePlan?.version || 1, layout: scenePlan?.layout || null, scenes: scene.scenes },
+    product: productImageUrl ? { imageUrl: productImageUrl } : null,
     tempDir: scene.tempDir,
     liveTitleFile: scene.liveTitleFile,
     liveSubtitleFile: scene.liveSubtitleFile,
@@ -204,7 +226,13 @@ const server = createServer(async (req, res) => {
     try {
       const payload = await readJson(req);
       await startJob(payload);
-      return json(res, 202, { ok: true, jobId: payload.jobId, status: "starting", scenes: normalizeScenes(payload.scenePlan).length });
+      return json(res, 202, {
+        ok: true,
+        jobId: payload.jobId,
+        status: "starting",
+        scenes: normalizeScenes(payload.scenePlan).length,
+        productImage: Boolean(validHttpsUrl(payload.product?.imageUrl)),
+      });
     } catch (error) {
       return json(res, 400, { error: error instanceof Error ? error.message : "Unable to start broadcast." });
     }
