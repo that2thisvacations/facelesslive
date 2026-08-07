@@ -1,6 +1,13 @@
 import { NextResponse } from "next/server";
 
-const SUPPORTED_HOSTS = ["tiktok.com", "shopify.com", "amazon.com", "etsy.com"];
+const SUPPORTED_HOSTS = [
+  "tiktok.com",
+  "shopify.com",
+  "myshopify.com",
+  "amazon.com",
+  "etsy.com",
+  "printify.com",
+];
 
 function titleFromPath(pathname: string) {
   const slug = pathname.split("/").filter(Boolean).pop() || "Imported Product";
@@ -11,9 +18,15 @@ function titleFromPath(pathname: string) {
 }
 
 export async function POST(request: Request) {
-  const body = (await request.json()) as { url?: string };
+  let body: unknown;
 
-  if (!body.url) {
+  try {
+    body = await request.json();
+  } catch {
+    return NextResponse.json({ error: "Request body must contain valid JSON." }, { status: 400 });
+  }
+
+  if (!body || typeof body !== "object" || !("url" in body) || typeof body.url !== "string" || !body.url.trim()) {
     return NextResponse.json({ error: "A product URL is required." }, { status: 400 });
   }
 
@@ -24,7 +37,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Enter a valid product URL." }, { status: 400 });
   }
 
-  if (!['http:', 'https:'].includes(parsed.protocol)) {
+  if (!["http:", "https:"].includes(parsed.protocol)) {
     return NextResponse.json({ error: "Only HTTP and HTTPS links are supported." }, { status: 400 });
   }
 
