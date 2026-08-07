@@ -1,10 +1,15 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import type { User } from "@supabase/supabase-js";
 import { Bot, Check, ChevronLeft, ChevronRight, LoaderCircle, Package, Radio, Save, Sparkles } from "lucide-react";
+import { AuthPanel } from "@/components/auth-panel";
+import { PrintifyPicker } from "@/components/printify-picker";
+import { RtmpPanel, type RtmpConfig } from "@/components/rtmp-panel";
+import { getSupabaseBrowser } from "@/lib/supabase-browser";
 
 const steps = ["Product", "AI Host", "Script", "Stream", "Launch"];
-const products = [
+const starterProducts = [
   { id: "portable-blender", name: "Portable Blender", price: "$39.99", detail: "High-energy demo product" },
   { id: "travel-organizer", name: "Travel Organizer", price: "$24.99", detail: "Problem-and-solution presentation" },
   { id: "led-lamp", name: "Rechargeable LED Lamp", price: "$29.99", detail: "Feature-led product showcase" },
@@ -17,16 +22,20 @@ const hosts = [
 const layouts = ["Host + Product", "Product Focus", "Offer Countdown"];
 const DRAFT_KEY = "facelesslive-stream-draft";
 
+type ProductChoice = { id: string; name: string; price: string; detail: string };
+
 export default function Home() {
   const [step, setStep] = useState(0);
-  const [productId, setProductId] = useState(products[0].id);
+  const [products, setProducts] = useState<ProductChoice[]>(starterProducts);
+  const [productId, setProductId] = useState(starterProducts[0].id);
   const [hostId, setHostId] = useState(hosts[0].id);
   const [layout, setLayout] = useState(layouts[0]);
   const [script, setScript] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
   const [message, setMessage] = useState("");
+  const [user, setUser] = useState<User | null>(null);
 
-  const product = useMemo(() => products.find((item) => item.id === productId) ?? products[0], [productId]);
+  const product = useMemo(() => products.find((item) => item.id === productId) ?? products[0], [products, productId]);
   const host = useMemo(() => hosts.find((item) => item.id === hostId) ?? hosts[0], [hostId]);
 
   useEffect(() => {
@@ -38,110 +47,68 @@ export default function Home() {
       if (draft.hostId) setHostId(draft.hostId);
       if (draft.layout) setLayout(draft.layout);
       if (draft.script) setScript(draft.script);
-      setMessage("Saved draft restored");
-    } catch {
-      window.localStorage.removeItem(DRAFT_KEY);
-    }
+      setMessage("Saved device draft restored");
+    } catch { window.localStorage.removeItem(DRAFT_KEY); }
   }, []);
 
   async function generateScript() {
-    setIsGenerating(true);
-    setMessage("");
+    setIsGenerating(true); setMessage("");
     try {
-      const response = await fetch("/api/scripts/generate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          productName: product.name,
-          productPrice: product.price,
-          hostStyle: host.style,
-          tone: hostId === "professor" ? "educational" : hostId === "trend" ? "energetic" : "demonstration",
-        }),
-      });
+      const response = await fetch("/api/scripts/generate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ productName: product.name, productPrice: product.price, hostStyle: host.style, tone: hostId === "professor" ? "educational" : hostId === "trend" ? "energetic" : "demonstration" }) });
       const data = (await response.json()) as { script?: string; error?: string };
       if (!response.ok || !data.script) throw new Error(data.error || "Script generation failed.");
-      setScript(data.script);
-      setMessage("Fresh sales script generated");
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Script generation failed.");
-    } finally {
-      setIsGenerating(false);
-    }
+      setScript(data.script); setMessage("Fresh sales script generated");
+    } catch (error) { setMessage(error instanceof Error ? error.message : "Script generation failed."); }
+    finally { setIsGenerating(false); }
   }
 
-  function saveDraft() {
+  async function saveDraft() {
     window.localStorage.setItem(DRAFT_KEY, JSON.stringify({ productId, hostId, layout, script }));
-    setMessage("Draft saved on this device");
+    if (!user) return setMessage("Draft saved on this device. Sign in to save it to the cloud.");
+    const supabase = getSupabaseBrowser();
+    if (!supabase) return setMessage("Supabase is not configured.");
+    const { error } = await supabase.from("stream_drafts").insert({ owner_id: user.id, product_id: null, host_id: hostId, layout_id: layout, script, status: script ? "ready" : "draft" });
+    setMessage(error ? error.message : "Draft saved to your FacelessLive cloud account.");
   }
 
-  async function next() {
-    if (step === 2 && !script) await generateScript();
-    setStep((current) => Math.min(current + 1, steps.length - 1));
+  function addPrintifyProduct(nextProduct: ProductChoice) {
+    setProducts((current) => current.some((item) => item.id === nextProduct.id) ? current : [nextProduct, ...current]);
+    setProductId(nextProduct.id);
+    setMessage(`${nextProduct.name} imported from Printify.`);
   }
 
-  return (
-    <main>
-      <header className="topbar">
-        <div className="brand"><span className="brandMark">F</span><span>FacelessLive</span></div>
-        <div className="headerActions"><span className="saveMessage">{message}</span><button className="ghostButton compact" onClick={saveDraft}><Save size={16} /> Save Draft</button><span className="buildBadge">COMMERCE CORE</span></div>
-      </header>
+  async function saveRtmp(config: RtmpConfig) {
+    const supabase = getSupabaseBrowser();
+    if (!user || !supabase) return setMessage("Sign in before saving an RTMP destination.");
+    const { data } = await supabase.auth.getSession();
+    const token = data.session?.access_token;
+    if (!token) return setMessage("Your session expired. Sign in again.");
+    const response = await fetch("/api/destinations/rtmp", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify(config) });
+    const result = await response.json();
+    setMessage(response.ok ? "Encrypted RTMP destination saved." : result.error || "Unable to save RTMP destination.");
+  }
 
-      <section className="builderShell">
-        <aside className="builderIntro">
-          <p className="eyebrow">CREATE A FACELESS STREAM</p>
-          <h1>Build the show.<br /><span>Skip the camera.</span></h1>
-          <p className="heroCopy">Choose a product, assign an AI host, generate the selling script, and prepare a launch-ready stream in one guided flow.</p>
-          <div className="summaryCard">
-            <span>Current build</span>
-            <strong>{product.name}</strong>
-            <small>{host.name} · {layout}</small>
-          </div>
-        </aside>
+  async function next() { if (step === 2 && !script) await generateScript(); setStep((current) => Math.min(current + 1, steps.length - 1)); }
 
-        <section className="wizardPanel">
-          <div className="stepRail">
-            {steps.map((label, index) => (
-              <button className={index === step ? "step active" : index < step ? "step done" : "step"} key={label} onClick={() => setStep(index)}>
-                <span>{index < step ? <Check size={15} /> : index + 1}</span>{label}
-              </button>
-            ))}
-          </div>
+  return <main>
+    <header className="topbar"><div className="brand"><span className="brandMark">F</span><span>FacelessLive</span></div><div className="headerActions"><span className="saveMessage">{message}</span><button className="ghostButton compact" onClick={saveDraft}><Save size={16}/> Save Draft</button><span className="buildBadge">CLOUD COMMERCE</span></div></header>
+    <section className="accountStrip"><AuthPanel onUser={setUser}/></section>
 
-          <div className="stepContent">
-            {step === 0 && <SelectionStep title="Select a product" subtitle="Choose what the AI host will present during the stream.">
-              <div className="choiceGrid">{products.map((item) => <button key={item.id} onClick={() => setProductId(item.id)} className={productId === item.id ? "choiceCard selected" : "choiceCard"}><Package size={23} /><strong>{item.name}</strong><span>{item.detail}</span><b>{item.price}</b></button>)}</div>
-            </SelectionStep>}
-
-            {step === 1 && <SelectionStep title="Choose your AI host" subtitle="Match the presenter personality to the product and audience.">
-              <div className="choiceGrid">{hosts.map((item) => <button key={item.id} onClick={() => setHostId(item.id)} className={hostId === item.id ? "choiceCard selected" : "choiceCard"}><span className="avatar">{item.initials}</span><strong>{item.name}</strong><span>{item.style}</span></button>)}</div>
-            </SelectionStep>}
-
-            {step === 2 && <SelectionStep title="Generate the sales script" subtitle="Create server-generated copy, then edit the exact words your host will say.">
-              <button className="generateButton" onClick={generateScript} disabled={isGenerating}>{isGenerating ? <LoaderCircle className="spin" size={18} /> : <Sparkles size={18} />} {isGenerating ? "Generating..." : "Generate script"}</button>
-              <textarea value={script} onChange={(event) => setScript(event.target.value)} placeholder="Your livestream script will appear here..." />
-            </SelectionStep>}
-
-            {step === 3 && <SelectionStep title="Design the stream" subtitle="Choose a clean layout for the host, product, offer, and live shopping elements.">
-              <div className="layoutGrid">{layouts.map((item) => <button key={item} className={layout === item ? "layoutCard selected" : "layoutCard"} onClick={() => setLayout(item)}><div className="miniStage"><span /><i /><b /></div><strong>{item}</strong></button>)}</div>
-            </SelectionStep>}
-
-            {step === 4 && <SelectionStep title="Ready for launch" subtitle="Review the stream package before connecting a broadcasting destination.">
-              <div className="launchCard"><div className="launchIcon"><Radio size={26} /></div><div><p>STREAM PACKAGE READY</p><h3>{product.name}</h3><span>{host.name} · {layout}</span></div></div>
-              <div className="checkList"><span><Check size={16} /> Product selected</span><span><Check size={16} /> AI host assigned</span><span><Check size={16} /> Sales script prepared</span><span><Check size={16} /> Stream layout configured</span></div>
-              <button className="primaryButton full"><Radio size={18} /> Connect Broadcast Destination</button>
-            </SelectionStep>}
-          </div>
-
-          <footer className="wizardFooter">
-            <button className="ghostButton" disabled={step === 0} onClick={() => setStep((current) => Math.max(current - 1, 0))}><ChevronLeft size={18} /> Back</button>
-            {step < steps.length - 1 && <button className="primaryButton" onClick={next} disabled={isGenerating}>Continue <ChevronRight size={18} /></button>}
-          </footer>
-        </section>
+    <section className="builderShell">
+      <aside className="builderIntro"><p className="eyebrow">CREATE A FACELESS STREAM</p><h1>Build the show.<br/><span>Skip the camera.</span></h1><p className="heroCopy">Choose a product, assign an AI host, generate the selling script, configure a destination, and prepare a launch-ready stream.</p><div className="summaryCard"><span>Current build</span><strong>{product.name}</strong><small>{host.name} · {layout}</small></div></aside>
+      <section className="wizardPanel">
+        <div className="stepRail">{steps.map((label, index) => <button className={index === step ? "step active" : index < step ? "step done" : "step"} key={label} onClick={() => setStep(index)}><span>{index < step ? <Check size={15}/> : index + 1}</span>{label}</button>)}</div>
+        <div className="stepContent">
+          {step === 0 && <SelectionStep title="Select a product" subtitle="Choose a sample product or load products from Printify."><div className="choiceGrid">{products.map((item) => <button key={item.id} onClick={() => setProductId(item.id)} className={productId === item.id ? "choiceCard selected" : "choiceCard"}><Package size={23}/><strong>{item.name}</strong><span>{item.detail}</span><b>{item.price}</b></button>)}</div><PrintifyPicker onSelect={addPrintifyProduct}/></SelectionStep>}
+          {step === 1 && <SelectionStep title="Choose your AI host" subtitle="Match the presenter personality to the product and audience."><div className="choiceGrid">{hosts.map((item) => <button key={item.id} onClick={() => setHostId(item.id)} className={hostId === item.id ? "choiceCard selected" : "choiceCard"}><span className="avatar">{item.initials}</span><strong>{item.name}</strong><span>{item.style}</span></button>)}</div></SelectionStep>}
+          {step === 2 && <SelectionStep title="Generate the sales script" subtitle="Create server-generated copy, then edit the exact words your host will say."><button className="generateButton" onClick={generateScript} disabled={isGenerating}>{isGenerating ? <LoaderCircle className="spin" size={18}/> : <Sparkles size={18}/>} {isGenerating ? "Generating..." : "Generate script"}</button><textarea value={script} onChange={(event) => setScript(event.target.value)} placeholder="Your livestream script will appear here..."/></SelectionStep>}
+          {step === 3 && <SelectionStep title="Design the stream" subtitle="Choose a layout, then configure a secure broadcast destination."><div className="layoutGrid">{layouts.map((item) => <button key={item} className={layout === item ? "layoutCard selected" : "layoutCard"} onClick={() => setLayout(item)}><div className="miniStage"><span/><i/><b/></div><strong>{item}</strong></button>)}</div><RtmpPanel onSave={saveRtmp}/></SelectionStep>}
+          {step === 4 && <SelectionStep title="Ready for launch" subtitle="Review the stream package before the live broadcast engine is connected."><div className="launchCard"><div className="launchIcon"><Radio size={26}/></div><div><p>STREAM PACKAGE READY</p><h3>{product.name}</h3><span>{host.name} · {layout}</span></div></div><div className="checkList"><span><Check size={16}/> Product selected</span><span><Check size={16}/> AI host assigned</span><span><Check size={16}/> Sales script prepared</span><span><Check size={16}/> Stream layout configured</span></div><button className="primaryButton full" disabled><Radio size={18}/> Broadcast Engine — Next Build</button></SelectionStep>}
+        </div>
+        <footer className="wizardFooter"><button className="ghostButton" disabled={step === 0} onClick={() => setStep((current) => Math.max(current - 1, 0))}><ChevronLeft size={18}/> Back</button>{step < steps.length - 1 && <button className="primaryButton" onClick={next} disabled={isGenerating}>Continue <ChevronRight size={18}/></button>}</footer>
       </section>
-    </main>
-  );
+    </section>
+  </main>;
 }
 
-function SelectionStep({ title, subtitle, children }: { title: string; subtitle: string; children: React.ReactNode }) {
-  return <div><div className="contentHeading"><div className="iconBox"><Bot size={21} /></div><div><h2>{title}</h2><p>{subtitle}</p></div></div>{children}</div>;
-}
+function SelectionStep({ title, subtitle, children }: { title: string; subtitle: string; children: React.ReactNode }) { return <div><div className="contentHeading"><div className="iconBox"><Bot size={21}/></div><div><h2>{title}</h2><p>{subtitle}</p></div></div>{children}</div>; }

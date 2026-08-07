@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import "./integrations.css";
 
 export const metadata: Metadata = {
   title: "FacelessLive | Go Live. Stay Faceless. Sell More.",
