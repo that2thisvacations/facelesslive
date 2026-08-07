@@ -4,7 +4,7 @@ import { decryptStreamCredentials } from "@/lib/stream-credentials";
 
 type Scene = { id?: string; start?: number; end?: number; title?: string; subtitle?: string; position?: string };
 type ScenePlan = { version?: number; layout?: string; scenes?: Scene[] };
-type StartRequest = { destinationId?: string; streamDraftId?: string; presenterJobId?: string; scenePlan?: ScenePlan };
+type StartRequest = { destinationId?: string; streamDraftId?: string; presenterJobId?: string; scenePlan?: ScenePlan; productImageUrl?: string };
 type RtmpCredentials = { serverUrl: string; streamKey: string };
 
 function sanitizeScenePlan(plan?: ScenePlan): ScenePlan | null {
@@ -18,6 +18,15 @@ function sanitizeScenePlan(plan?: ScenePlan): ScenePlan | null {
     position: scene.position === "top" ? "top" : "lower-third",
   })).filter((scene) => scene.end > scene.start && (scene.title || scene.subtitle));
   return scenes.length ? { version: 1, layout: String(plan.layout || "Host + Product").slice(0, 60), scenes } : null;
+}
+
+function sanitizeProductImageUrl(value?: string) {
+  if (!value?.trim()) return null;
+  try {
+    const url = new URL(value.trim());
+    if (!['https:'].includes(url.protocol)) return null;
+    return url.toString().slice(0, 1200);
+  } catch { return null; }
 }
 
 export async function POST(request: Request) {
@@ -45,6 +54,7 @@ export async function POST(request: Request) {
 
   if (!body.destinationId) return NextResponse.json({ error: "A broadcast destination is required." }, { status: 400 });
   const scenePlan = sanitizeScenePlan(body.scenePlan);
+  const productImageUrl = sanitizeProductImageUrl(body.productImageUrl);
 
   const admin = createClient(url, serviceKey, { auth: { persistSession: false } });
   const { data: destination, error: destinationError } = await admin
@@ -92,6 +102,7 @@ export async function POST(request: Request) {
       job,
       execution: "not_started",
       scenePlan,
+      productImageUrl,
       message: "Broadcast package is ready. Configure BROADCAST_WORKER_URL to execute RTMP streaming.",
     }, { status: 202 });
   }
@@ -109,13 +120,14 @@ export async function POST(request: Request) {
         destination: { serverUrl: credentials.serverUrl, streamKey: credentials.streamKey },
         presenter: presenter ? { jobId: presenter.id, mediaUrl: presenter.media_url } : null,
         scenePlan,
+        product: productImageUrl ? { imageUrl: productImageUrl } : null,
       }),
       cache: "no-store",
     });
 
     if (!workerResponse.ok) throw new Error(`Broadcast worker returned ${workerResponse.status}.`);
     await admin.from("stream_jobs").update({ status: "starting", updated_at: new Date().toISOString() }).eq("id", job.id);
-    return NextResponse.json({ job: { ...job, status: "starting" }, execution: "dispatched", scenePlan }, { status: 202 });
+    return NextResponse.json({ job: { ...job, status: "starting" }, execution: "dispatched", scenePlan, productImageUrl }, { status: 202 });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unable to dispatch broadcast.";
     await admin.from("stream_jobs").update({ status: "error", error_message: message, updated_at: new Date().toISOString() }).eq("id", job.id);
