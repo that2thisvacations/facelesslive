@@ -60,10 +60,12 @@ function normalizeScenes(scenePlan) {
   })).filter((scene) => scene.end > scene.start && (scene.title || scene.subtitle));
 }
 
+function cleanOverlayText(value, max = 180) {
+  return String(value || "").replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trim().slice(0, max);
+}
+
 function buildSceneFilters(jobId, scenePlan) {
   const scenes = normalizeScenes(scenePlan);
-  if (!scenes.length) return { filter: null, tempDir: null, scenes: [] };
-
   const tempDir = mkdtempSync(join(tmpdir(), `facelesslive-${jobId}-`));
   const filters = [];
 
@@ -81,21 +83,54 @@ function buildSceneFilters(jobId, scenePlan) {
     if (scene.subtitle) filters.push(`drawtext=textfile='${subtitleFile}':fontcolor=white@0.9:fontsize=27:x=60:y=${subtitleY}:enable='${enable}'`);
   });
 
-  return { filter: filters.join(","), tempDir, scenes };
+  const liveTitleFile = join(tempDir, "live-title.txt");
+  const liveSubtitleFile = join(tempDir, "live-subtitle.txt");
+  writeFileSync(liveTitleFile, "", "utf8");
+  writeFileSync(liveSubtitleFile, "", "utf8");
+  filters.push(`drawtext=textfile='${liveTitleFile}':reload=1:fontcolor=white:fontsize=36:x=60:y=70:box=1:boxcolor=black@0.72:boxborderw=16:borderw=2:bordercolor=black`);
+  filters.push(`drawtext=textfile='${liveSubtitleFile}':reload=1:fontcolor=white:fontsize=28:x=60:y=132:box=1:boxcolor=black@0.72:boxborderw=16:borderw=2:bordercolor=black`);
+
+  return { filter: filters.join(","), tempDir, scenes, liveTitleFile, liveSubtitleFile };
+}
+
+function clearLiveOverlay(job) {
+  if (!job?.liveTitleFile || !job?.liveSubtitleFile) return;
+  try {
+    writeFileSync(job.liveTitleFile, "", "utf8");
+    writeFileSync(job.liveSubtitleFile, "", "utf8");
+  } catch (error) {
+    console.error("overlay_clear_failed", error);
+  }
+}
+
+function updateLiveOverlay(jobId, payload) {
+  const job = jobs.get(jobId);
+  if (!job?.process || !job.liveTitleFile || !job.liveSubtitleFile) throw new Error("Active broadcast job not found.");
+  const title = cleanOverlayText(payload?.title, 90);
+  const subtitle = cleanOverlayText(payload?.subtitle, 180);
+  if (!title && !subtitle) throw new Error("Overlay title or subtitle is required.");
+  writeFileSync(job.liveTitleFile, title, "utf8");
+  writeFileSync(job.liveSubtitleFile, subtitle, "utf8");
+  const duration = Math.min(30, Math.max(3, Number(payload?.duration || 10)));
+  if (job.overlayTimer) clearTimeout(job.overlayTimer);
+  job.overlayTimer = setTimeout(() => {
+    clearLiveOverlay(job);
+    job.overlayTimer = null;
+  }, duration * 1000);
+  job.liveOverlay = { title, subtitle, duration, updatedAt: new Date().toISOString() };
+  job.updatedAt = new Date().toISOString();
+  return job.liveOverlay;
 }
 
 async function startJob(payload) {
   const { jobId, destination, presenter, scenePlan } = payload || {};
-  if (!jobId || !destination?.serverUrl || !destination?.streamKey) {
-    throw new Error("jobId and RTMP destination credentials are required.");
-  }
+  if (!jobId || !destination?.serverUrl || !destination?.streamKey) throw new Error("jobId and RTMP destination credentials are required.");
   if (!presenter?.mediaUrl) throw new Error("A ready presenter mediaUrl is required for this worker.");
   if (jobs.get(jobId)?.process) throw new Error("Broadcast job is already running.");
 
   const output = buildOutputUrl(destination.serverUrl, destination.streamKey);
   const scene = buildSceneFilters(jobId, scenePlan);
-  const args = ["-hide_banner", "-loglevel", "warning", "-re", "-stream_loop", "-1", "-i", presenter.mediaUrl];
-  if (scene.filter) args.push("-vf", scene.filter);
+  const args = ["-hide_banner", "-loglevel", "warning", "-re", "-stream_loop", "-1", "-i", presenter.mediaUrl, "-vf", scene.filter];
   args.push(
     "-c:v", "libx264",
     "-preset", "veryfast",
@@ -119,6 +154,10 @@ async function startJob(payload) {
     updatedAt: new Date().toISOString(),
     scenePlan: { version: scenePlan?.version || 1, layout: scenePlan?.layout || null, scenes: scene.scenes },
     tempDir: scene.tempDir,
+    liveTitleFile: scene.liveTitleFile,
+    liveSubtitleFile: scene.liveSubtitleFile,
+    liveOverlay: null,
+    overlayTimer: null,
   });
 
   let liveReported = false;
@@ -134,10 +173,11 @@ async function startJob(payload) {
   child.on("error", async (error) => { await report(jobId, "error", error.message); });
   child.on("exit", async (code, signal) => {
     const current = jobs.get(jobId) || {};
+    if (current.overlayTimer) clearTimeout(current.overlayTimer);
     if (current.tempDir) {
       try { rmSync(current.tempDir, { recursive: true, force: true }); } catch {}
     }
-    jobs.set(jobId, { ...current, process: null, tempDir: null, exitCode: code, signal });
+    jobs.set(jobId, { ...current, process: null, tempDir: null, liveTitleFile: null, liveSubtitleFile: null, overlayTimer: null, exitCode: code, signal });
     if (code === 0 || signal === "SIGTERM") await report(jobId, "ended");
     else await report(jobId, "error", `FFmpeg exited with code ${code ?? "unknown"}.`);
   });
@@ -155,7 +195,7 @@ const server = createServer(async (req, res) => {
     const id = decodeURIComponent(url.pathname.slice("/jobs/".length));
     const job = jobs.get(id);
     if (!job) return json(res, 404, { error: "Job not found." });
-    const { process: _process, tempDir: _tempDir, ...safe } = job;
+    const { process: _process, tempDir: _tempDir, liveTitleFile: _liveTitleFile, liveSubtitleFile: _liveSubtitleFile, overlayTimer: _overlayTimer, ...safe } = job;
     return json(res, 200, { job: safe });
   }
 
@@ -170,11 +210,24 @@ const server = createServer(async (req, res) => {
     }
   }
 
+  if (req.method === "POST" && url.pathname.startsWith("/jobs/") && url.pathname.endsWith("/overlay")) {
+    if (!authorized(req)) return json(res, 401, { error: "Unauthorized." });
+    const id = decodeURIComponent(url.pathname.slice("/jobs/".length, -"/overlay".length));
+    try {
+      const payload = await readJson(req);
+      const overlay = updateLiveOverlay(id, payload);
+      return json(res, 202, { ok: true, jobId: id, overlay });
+    } catch (error) {
+      return json(res, 400, { error: error instanceof Error ? error.message : "Unable to update live overlay." });
+    }
+  }
+
   if (req.method === "POST" && url.pathname.startsWith("/jobs/") && url.pathname.endsWith("/stop")) {
     if (!authorized(req)) return json(res, 401, { error: "Unauthorized." });
     const id = decodeURIComponent(url.pathname.slice("/jobs/".length, -"/stop".length));
     const job = jobs.get(id);
     if (!job?.process) return json(res, 404, { error: "Active job not found." });
+    clearLiveOverlay(job);
     job.process.kill("SIGTERM");
     return json(res, 202, { ok: true, jobId: id, status: "stopping" });
   }
