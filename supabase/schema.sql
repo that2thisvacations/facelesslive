@@ -77,6 +77,7 @@ create table if not exists public.live_events (
   owner_id uuid not null references auth.users(id) on delete cascade,
   stream_job_id uuid not null references public.stream_jobs(id) on delete cascade,
   source text not null default 'manual',
+  external_event_id text,
   event_type text not null default 'comment' check (event_type in ('comment','question','reaction')),
   viewer_name text,
   message text not null,
@@ -87,6 +88,11 @@ create table if not exists public.live_events (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+alter table public.live_events add column if not exists external_event_id text;
+create unique index if not exists live_events_source_external_event_uidx
+  on public.live_events(source, external_event_id)
+  where external_event_id is not null;
 
 alter table public.profiles enable row level security;
 alter table public.products enable row level security;
