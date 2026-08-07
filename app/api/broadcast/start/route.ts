@@ -2,7 +2,7 @@ import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
 import { decryptStreamCredentials } from "@/lib/stream-credentials";
 
-type StartRequest = { destinationId?: string; streamDraftId?: string };
+type StartRequest = { destinationId?: string; streamDraftId?: string; presenterJobId?: string };
 type RtmpCredentials = { serverUrl: string; streamKey: string };
 
 export async function POST(request: Request) {
@@ -43,6 +43,20 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "The selected destination is not ready." }, { status: 409 });
   }
 
+  let presenter: { id: string; media_url: string | null; status: string } | null = null;
+  if (body.presenterJobId) {
+    const { data, error } = await admin.from("presenter_jobs")
+      .select("id,media_url,status")
+      .eq("id", body.presenterJobId)
+      .eq("owner_id", authData.user.id)
+      .maybeSingle();
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    if (!data || data.status !== "ready" || !data.media_url) {
+      return NextResponse.json({ error: "The selected AI presenter is not ready for broadcast." }, { status: 409 });
+    }
+    presenter = data;
+  }
+
   let credentials: RtmpCredentials;
   try { credentials = decryptStreamCredentials<RtmpCredentials>(destination.encrypted_credentials, secret); }
   catch { return NextResponse.json({ error: "Stored stream credentials could not be decrypted." }, { status: 500 }); }
@@ -51,6 +65,7 @@ export async function POST(request: Request) {
     owner_id: authData.user.id,
     stream_draft_id: body.streamDraftId || null,
     destination_id: destination.id,
+    presenter_job_id: presenter?.id || null,
     status: workerUrl ? "queued" : "ready",
   }).select("id,status,created_at").single();
 
@@ -75,6 +90,7 @@ export async function POST(request: Request) {
         jobId: job.id,
         provider: destination.provider,
         destination: { serverUrl: credentials.serverUrl, streamKey: credentials.streamKey },
+        presenter: presenter ? { jobId: presenter.id, mediaUrl: presenter.media_url } : null,
       }),
       cache: "no-store",
     });
@@ -83,7 +99,8 @@ export async function POST(request: Request) {
     await admin.from("stream_jobs").update({ status: "starting", updated_at: new Date().toISOString() }).eq("id", job.id);
     return NextResponse.json({ job: { ...job, status: "starting" }, execution: "dispatched" }, { status: 202 });
   } catch (error) {
-    await admin.from("stream_jobs").update({ status: "error", error_message: error instanceof Error ? error.message : "Worker dispatch failed.", updated_at: new Date().toISOString() }).eq("id", job.id);
-    return NextResponse.json({ error: error instanceof Error ? error.message : "Unable to dispatch broadcast." }, { status: 502 });
+    const message = error instanceof Error ? error.message : "Unable to dispatch broadcast.";
+    await admin.from("stream_jobs").update({ status: "error", error_message: message, updated_at: new Date().toISOString() }).eq("id", job.id);
+    return NextResponse.json({ error: message }, { status: 502 });
   }
 }
