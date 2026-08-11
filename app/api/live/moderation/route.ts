@@ -1,7 +1,8 @@
 import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
 
-type ActionRequest = { eventId?: string; action?: "approve_speech" | "ignore"; voice?: string };
+type ActionRequest = { eventId?: string; action?: string; voice?: string };
+const ALLOWED_ACTIONS = new Set(["approve_speech", "ignore"]);
 
 async function getContext(request: Request) {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -45,6 +46,7 @@ export async function POST(request: Request) {
   try { body = (await request.json()) as ActionRequest; }
   catch { return NextResponse.json({ error: "Invalid JSON." }, { status: 400 }); }
   if (!body.eventId || !body.action) return NextResponse.json({ error: "eventId and action are required." }, { status: 400 });
+  if (!ALLOWED_ACTIONS.has(body.action)) return NextResponse.json({ error: "Unsupported moderation action." }, { status: 400 });
 
   const { data: event, error } = await ctx.admin.from("live_events")
     .select("id,stream_job_id,response_text,speech_status")
@@ -53,14 +55,32 @@ export async function POST(request: Request) {
     .maybeSingle();
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   if (!event) return NextResponse.json({ error: "Moderation event not found." }, { status: 404 });
+  if (!["approval_required", "error"].includes(event.speech_status)) return NextResponse.json({ error: "This moderation event has already been handled." }, { status: 409 });
 
   if (body.action === "ignore") {
-    const { error: updateError } = await ctx.admin.from("live_events").update({ status: "ignored", speech_status: "not_requested", updated_at: new Date().toISOString() }).eq("id", event.id);
+    const { data: ignored, error: updateError } = await ctx.admin.from("live_events")
+      .update({ status: "ignored", speech_status: "not_requested", updated_at: new Date().toISOString() })
+      .eq("id", event.id)
+      .eq("owner_id", ctx.user.id)
+      .in("speech_status", ["approval_required", "error"])
+      .select("id")
+      .maybeSingle();
     if (updateError) return NextResponse.json({ error: updateError.message }, { status: 500 });
+    if (!ignored) return NextResponse.json({ error: "This moderation event was already handled." }, { status: 409 });
     return NextResponse.json({ ok: true, action: "ignored" });
   }
 
   if (!event.response_text?.trim()) return NextResponse.json({ error: "This event has no response text to speak." }, { status: 409 });
+  const { data: claimed, error: claimError } = await ctx.admin.from("live_events")
+    .update({ speech_status: "queued", updated_at: new Date().toISOString() })
+    .eq("id", event.id)
+    .eq("owner_id", ctx.user.id)
+    .in("speech_status", ["approval_required", "error"])
+    .select("id")
+    .maybeSingle();
+  if (claimError) return NextResponse.json({ error: claimError.message }, { status: 500 });
+  if (!claimed) return NextResponse.json({ error: "This moderation event was already handled." }, { status: 409 });
+
   const origin = new URL(request.url).origin;
   const response = await fetch(`${origin}/api/live/speech/queue`, {
     method: "POST",
@@ -69,7 +89,10 @@ export async function POST(request: Request) {
     cache: "no-store",
   });
   const result = await response.json().catch(() => ({}));
-  if (!response.ok) return NextResponse.json({ error: result.error || "Unable to approve spoken response." }, { status: response.status });
-  await ctx.admin.from("live_events").update({ speech_status: "queued", response_spoken_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq("id", event.id);
+  if (!response.ok) {
+    await ctx.admin.from("live_events").update({ speech_status: "error", error_message: result.error || "Unable to approve spoken response.", updated_at: new Date().toISOString() }).eq("id", event.id);
+    return NextResponse.json({ error: result.error || "Unable to approve spoken response." }, { status: response.status });
+  }
+  await ctx.admin.from("live_events").update({ response_spoken_at: new Date().toISOString(), error_message: null, updated_at: new Date().toISOString() }).eq("id", event.id);
   return NextResponse.json({ ok: true, action: "approve_speech", queue: result.queue || null });
 }
