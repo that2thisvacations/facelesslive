@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { getSupabaseBrowser } from "@/lib/supabase-browser";
 
 type StreamJob = { id: string; status: string; created_at: string };
@@ -14,6 +14,7 @@ export default function ModerationPage() {
   const [voice, setVoice] = useState("alloy");
   const [message, setMessage] = useState("Review approval-gated live responses before they are spoken.");
   const [busyId, setBusyId] = useState("");
+  const loadVersion = useRef(0);
 
   async function session() {
     const supabase = getSupabaseBrowser();
@@ -36,15 +37,20 @@ export default function ModerationPage() {
   }
 
   async function loadEvents(jobId = streamJobId) {
+    const version = ++loadVersion.current;
     try {
       const { token } = await session();
       const qs = jobId ? `?streamJobId=${encodeURIComponent(jobId)}` : "";
       const response = await fetch(`/api/live/moderation${qs}`, { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Unable to load moderation queue.");
+      if (version !== loadVersion.current) return;
       setEvents(data.events || []);
       setMessage(data.events?.length ? `${data.events.length} response(s) require review.` : "Moderation queue is clear.");
-    } catch (error) { setMessage(error instanceof Error ? error.message : "Unable to load moderation queue."); }
+    } catch (error) {
+      if (version !== loadVersion.current) return;
+      setMessage(error instanceof Error ? error.message : "Unable to load moderation queue.");
+    }
   }
 
   async function act(eventId: string, action: "approve_speech" | "ignore") {
