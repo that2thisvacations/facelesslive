@@ -11,7 +11,9 @@ export async function GET(request: Request) {
   const graphVersion = process.env.META_GRAPH_VERSION;
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  const redirectBase = appUrl();
+  let redirectBase: string;
+  try { redirectBase = appUrl(); }
+  catch { return NextResponse.json({ error: "NEXT_PUBLIC_APP_URL is not configured." }, { status: 503 }); }
   if (!code || !state) return NextResponse.redirect(`${redirectBase}/provider-status?meta=invalid_state`);
   if (!appId || !appSecret || !graphVersion || !supabaseUrl || !serviceKey) return NextResponse.redirect(`${redirectBase}/provider-status?meta=not_configured`);
 
@@ -22,7 +24,7 @@ export async function GET(request: Request) {
     const tokens = await tokenResponse.json() as Record<string, unknown>;
     if (!tokenResponse.ok || typeof tokens.access_token !== "string") throw new Error("Meta token exchange failed.");
 
-    const meResponse = await fetch(`https://graph.facebook.com/${graphVersion}/me?fields=id,name&access_token=${encodeURIComponent(tokens.access_token)}`, { cache: "no-store" });
+    const meResponse = await fetch(`https://graph.facebook.com/${graphVersion}/me?fields=id,name`, { headers: { Authorization: `Bearer ${tokens.access_token}` }, cache: "no-store" });
     const me = meResponse.ok ? await meResponse.json() as { id?: string; name?: string } : {};
     const expiresIn = typeof tokens.expires_in === "number" ? tokens.expires_in : null;
     const admin = createClient(supabaseUrl, serviceKey, { auth: { persistSession: false } });
