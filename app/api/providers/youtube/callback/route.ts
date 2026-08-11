@@ -10,7 +10,9 @@ export async function GET(request: Request) {
   const clientSecret = process.env.YOUTUBE_CLIENT_SECRET;
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  const redirectBase = appUrl();
+  let redirectBase: string;
+  try { redirectBase = appUrl(); }
+  catch { return NextResponse.json({ error: "NEXT_PUBLIC_APP_URL is not configured." }, { status: 503 }); }
   if (!code || !state) return NextResponse.redirect(`${redirectBase}/provider-status?youtube=invalid_state`);
   if (!clientId || !clientSecret || !supabaseUrl || !serviceKey) return NextResponse.redirect(`${redirectBase}/provider-status?youtube=not_configured`);
 
