@@ -19,7 +19,7 @@ type ResponsePolicy = {
 
 const ALLOWED_PLATFORMS = new Set(["tiktok", "youtube", "facebook", "instagram", "custom"]);
 const ALLOWED_TYPES = new Set(["comment", "question", "reaction"]);
-const HIGH_RISK_TERMS = /\b(price|cost|discount|coupon|sale|shipping|ship|delivery|refund|return|inventory|stock|guarantee|warranty|certified|medical|health|cure|treat|legal|lawsuit|income|earnings|profit|claim)\b/i;
+const HIGH_RISK_TERMS = /\b(pric(?:e|es|ing)|cost(?:s|ing)?|discount(?:s|ed|ing)?|coupon(?:s)?|sale(?:s)?|shipping|ship(?:s|ped|ping)?|deliver(?:y|ies|ed|ing)?|refund(?:s|ed|ing)?|return(?:s|ed|ing)?|inventor(?:y|ies)|stock(?:s|ed|ing)?|guarantee(?:s|d|ing)?|warrant(?:y|ies|ed)?|certif(?:y|ied|ication|ications)|medical|health|cur(?:e|es|ed|ing)|treat(?:s|ed|ing|ment|ments)?|legal|lawsuit(?:s)?|income(?:s)?|earning(?:s)?|profit(?:s|ed|ing)?|claim(?:s|ed|ing)?)\b/i;
 
 function fallbackResponse(message: string) {
   const normalized = message.toLowerCase();
@@ -69,6 +69,16 @@ async function getPolicy(admin: SupabaseClient, streamJobId: string): Promise<Re
   return (data as ResponsePolicy | null) || { mode: "manual", voice: "alloy", max_spoken_per_minute: 4, speak_reactions: false };
 }
 
+async function reserveSpeechSlot(admin: SupabaseClient, eventId: string, streamJobId: string, maxPerMinute: number) {
+  const { data, error } = await admin.rpc("reserve_auto_speech_slot", {
+    p_event_id: eventId,
+    p_stream_job_id: streamJobId,
+    p_max_per_minute: maxPerMinute,
+  });
+  if (error) throw error;
+  return data === true;
+}
+
 async function queueSpeech(admin: SupabaseClient, eventId: string, streamJobId: string, eventType: string, viewerMessage: string, responseText: string) {
   const policy = await getPolicy(admin, streamJobId);
   if (policy.mode !== "safe_auto" || !isSafeForAutoSpeak(eventType, viewerMessage, responseText, policy)) {
@@ -76,12 +86,14 @@ async function queueSpeech(admin: SupabaseClient, eventId: string, streamJobId: 
     return { speech: "approval_required" };
   }
 
-  const since = new Date(Date.now() - 60_000).toISOString();
-  const { count } = await admin.from("live_events")
-    .select("id", { count: "exact", head: true })
-    .eq("stream_job_id", streamJobId)
-    .gte("response_spoken_at", since);
-  if ((count || 0) >= policy.max_spoken_per_minute) {
+  let reserved = false;
+  try {
+    reserved = await reserveSpeechSlot(admin, eventId, streamJobId, policy.max_spoken_per_minute);
+  } catch {
+    await admin.from("live_events").update({ speech_status: "approval_required" }).eq("id", eventId);
+    return { speech: "rate_limit_unavailable" };
+  }
+  if (!reserved) {
     await admin.from("live_events").update({ speech_status: "approval_required" }).eq("id", eventId);
     return { speech: "rate_limited" };
   }
@@ -90,7 +102,7 @@ async function queueSpeech(admin: SupabaseClient, eventId: string, streamJobId: 
   const workerUrl = process.env.BROADCAST_WORKER_URL;
   const workerToken = process.env.BROADCAST_WORKER_TOKEN;
   if (!apiKey || !workerUrl) {
-    await admin.from("live_events").update({ speech_status: "approval_required" }).eq("id", eventId);
+    await admin.from("live_events").update({ speech_status: "approval_required", response_spoken_at: null }).eq("id", eventId);
     return { speech: "not_configured" };
   }
 
@@ -113,10 +125,10 @@ async function queueSpeech(admin: SupabaseClient, eventId: string, streamJobId: 
       cache: "no-store",
     });
     if (!worker.ok) throw new Error(`Broadcast worker returned ${worker.status}.`);
-    await admin.from("live_events").update({ speech_status: "queued", response_spoken_at: new Date().toISOString() }).eq("id", eventId);
+    await admin.from("live_events").update({ speech_status: "queued" }).eq("id", eventId);
     return { speech: "queued" };
   } catch (error) {
-    await admin.from("live_events").update({ speech_status: "error", error_message: error instanceof Error ? error.message : "Unable to queue speech." }).eq("id", eventId);
+    await admin.from("live_events").update({ speech_status: "error", response_spoken_at: null, error_message: error instanceof Error ? error.message : "Unable to queue speech." }).eq("id", eventId);
     return { speech: "error" };
   }
 }
