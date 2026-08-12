@@ -11,10 +11,10 @@ type Connection = { provider: "youtube" | "meta"; status: string; provider_accou
 
 export default function ProviderStatusPage() {
   const [status, setStatus] = useState<ProviderStatus | null>(null);
-  const [connections, setConnections] = useState<Connection[]>([]);
+  const [connections, setConnections] = useState<Connection[] | null>(null);
   const [message, setMessage] = useState("Checking provider configuration...");
   const [busy, setBusy] = useState("");
-  const connectionMap = useMemo(() => new Map(connections.map((item) => [item.provider, item])), [connections]);
+  const connectionMap = useMemo(() => new Map((connections || []).map((item) => [item.provider, item])), [connections]);
 
   async function sessionToken() {
     const supabase = getSupabaseBrowser();
@@ -25,19 +25,29 @@ export default function ProviderStatusPage() {
   }
 
   async function load() {
+    setMessage("Checking provider configuration...");
     try {
       const response = await fetch("/api/providers/status", { cache: "no-store" });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Unable to read provider status.");
       setStatus(data);
+
       try {
         const token = await sessionToken();
         const connectionResponse = await fetch("/api/providers/connections", { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" });
         const connectionData = await connectionResponse.json();
-        if (connectionResponse.ok) setConnections(connectionData.connections || []);
-      } catch {}
-      setMessage("Provider readiness loaded. Stored access tokens remain encrypted server-side.");
-    } catch (error) { setMessage(error instanceof Error ? error.message : "Unable to read provider status."); }
+        if (!connectionResponse.ok) throw new Error(connectionData.error || "Unable to load saved provider connections.");
+        setConnections(connectionData.connections || []);
+        setMessage("Provider readiness and saved connections loaded. Stored access tokens remain encrypted server-side.");
+      } catch (error) {
+        setConnections(null);
+        setMessage(error instanceof Error ? `Provider readiness loaded, but connection status is unavailable: ${error.message}` : "Provider readiness loaded, but connection status is unavailable.");
+      }
+    } catch (error) {
+      setStatus(null);
+      setConnections(null);
+      setMessage(error instanceof Error ? error.message : "Unable to read provider status.");
+    }
   }
 
   async function connect(provider: "youtube" | "meta") {
@@ -58,7 +68,7 @@ export default function ProviderStatusPage() {
       const response = await fetch(`/api/providers/connections?provider=${provider}`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Unable to disconnect provider.");
-      setConnections((current) => current.filter((item) => item.provider !== provider));
+      setConnections((current) => (current || []).filter((item) => item.provider !== provider));
       setMessage(`${provider === "youtube" ? "YouTube" : "Meta"} disconnected from FacelessLive.`);
     } catch (error) { setMessage(error instanceof Error ? error.message : "Unable to disconnect provider."); }
     finally { setBusy(""); }
@@ -73,8 +83,8 @@ export default function ProviderStatusPage() {
       <p style={{ color: "#9fb0c0", lineHeight: 1.6 }}>Connect provider accounts for live-chat intake and platform mapping. OAuth access and refresh tokens are encrypted before storage and are never returned to this page.</p>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(280px,1fr))", gap: 14, marginTop: 24 }}>
-        <StatusCard title="YouTube" connected={connectionMap.get("youtube")} rows={[["OAuth credentials", status?.youtube.oauthConfigured],["Live connector secret", status?.youtube.connectorConfigured]]} details={[status?.youtube.callbackUrl ? `OAuth callback: ${status.youtube.callbackUrl}` : "Set NEXT_PUBLIC_APP_URL to generate the callback URL."]} onConnect={() => connect("youtube")} onDisconnect={() => disconnect("youtube")} busy={busy === "youtube"}/>
-        <StatusCard title="Meta" connected={connectionMap.get("meta")} rows={[["OAuth credentials", status?.meta.oauthConfigured],["Webhook credentials", status?.meta.webhookConfigured]]} details={[status?.meta.webhookUrl ? `Webhook: ${status.meta.webhookUrl}` : "Set NEXT_PUBLIC_APP_URL to generate the webhook URL.",status?.meta.callbackUrl ? `OAuth callback: ${status.meta.callbackUrl}` : "Meta callback URL pending app URL configuration."]} onConnect={() => connect("meta")} onDisconnect={() => disconnect("meta")} busy={busy === "meta"}/>
+        <StatusCard title="YouTube" connectionKnown={connections !== null} connected={connectionMap.get("youtube")} rows={[["OAuth credentials", status?.youtube.oauthConfigured],["Live connector secret", status?.youtube.connectorConfigured]]} details={[status?.youtube.callbackUrl ? `OAuth callback: ${status.youtube.callbackUrl}` : "Set NEXT_PUBLIC_APP_URL to generate the callback URL."]} onConnect={() => connect("youtube")} onDisconnect={() => disconnect("youtube")} busy={busy === "youtube"}/>
+        <StatusCard title="Meta" connectionKnown={connections !== null} connected={connectionMap.get("meta")} rows={[["OAuth credentials", status?.meta.oauthConfigured],["Webhook credentials", status?.meta.webhookConfigured]]} details={[status?.meta.webhookUrl ? `Webhook: ${status.meta.webhookUrl}` : "Set NEXT_PUBLIC_APP_URL to generate the webhook URL.",status?.meta.callbackUrl ? `OAuth callback: ${status.meta.callbackUrl}` : "Meta callback URL pending app URL configuration."]} onConnect={() => connect("meta")} onDisconnect={() => disconnect("meta")} busy={busy === "meta"}/>
       </div>
       <button onClick={load} style={secondaryStyle}>Refresh Status</button>
       <p style={{ color: "#9fb0c0", marginTop: 18 }}>{message}</p>
@@ -82,13 +92,15 @@ export default function ProviderStatusPage() {
   </main>;
 }
 
-function StatusCard({ title, rows, details, connected, onConnect, onDisconnect, busy }: { title: string; rows: Array<[string, boolean | undefined]>; details: string[]; connected?: Connection; onConnect: () => void; onDisconnect: () => void; busy: boolean }) {
+function StatusCard({ title, rows, details, connected, connectionKnown, onConnect, onDisconnect, busy }: { title: string; rows: Array<[string, boolean | undefined]>; details: string[]; connected?: Connection; connectionKnown: boolean; onConnect: () => void; onDisconnect: () => void; busy: boolean }) {
+  const stateLabel = !connectionKnown ? "STATUS UNKNOWN" : connected ? "CONNECTED" : "NOT CONNECTED";
+  const stateColor = !connectionKnown ? "#9fb0c0" : connected ? "#b9f4c8" : "#f2bd49";
   return <article style={{ border: "1px solid rgba(255,255,255,.12)", borderRadius: 16, padding: 20, background: "rgba(255,255,255,.03)" }}>
-    <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}><h2 style={{ margin: 0 }}>{title}</h2><strong style={{ color: connected ? "#b9f4c8" : "#f2bd49", fontSize: 12 }}>{connected ? "CONNECTED" : "NOT CONNECTED"}</strong></div>
+    <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}><h2 style={{ margin: 0 }}>{title}</h2><strong style={{ color: stateColor, fontSize: 12 }}>{stateLabel}</strong></div>
     {connected?.provider_account_name && <p style={{ color: "#f6f7fb", marginBottom: 8 }}>{connected.provider_account_name}</p>}
     <div style={{ display: "grid", gap: 9, marginTop: 16 }}>{rows.map(([label, ready]) => <div key={label} style={{ display: "flex", justifyContent: "space-between", gap: 12 }}><span style={{ color: "#9fb0c0" }}>{label}</span><strong style={{ color: ready ? "#b9f4c8" : "#f2bd49" }}>{ready ? "READY" : "NEEDS SETUP"}</strong></div>)}</div>
     <div style={{ marginTop: 16, display: "grid", gap: 7 }}>{details.map((item) => <small key={item} style={{ color: "#9fb0c0", wordBreak: "break-word" }}>{item}</small>)}</div>
-    <button disabled={busy} onClick={connected ? onDisconnect : onConnect} style={connected ? secondaryStyle : primaryStyle}>{busy ? "Working..." : connected ? "Disconnect" : `Connect ${title}`}</button>
+    <button disabled={busy || !connectionKnown} onClick={connected ? onDisconnect : onConnect} style={connected ? secondaryStyle : primaryStyle}>{busy ? "Working..." : !connectionKnown ? "Connection Status Unavailable" : connected ? "Disconnect" : `Connect ${title}`}</button>
   </article>;
 }
 
