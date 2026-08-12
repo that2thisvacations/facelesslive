@@ -5,9 +5,14 @@ import { appUrl, signOAuthState } from "@/lib/provider-oauth";
 export async function POST(request: Request) {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
   const appId = process.env.META_APP_ID;
+  const appSecret = process.env.META_APP_SECRET;
   const graphVersion = process.env.META_GRAPH_VERSION;
-  if (!url || !anonKey || !appId || !graphVersion) return NextResponse.json({ error: "Meta OAuth is not configured." }, { status: 503 });
+  const oauthSecret = process.env.PROVIDER_OAUTH_SECRET;
+  if (!url || !anonKey || !serviceKey || !appId || !appSecret || !graphVersion || !oauthSecret) {
+    return NextResponse.json({ error: "Meta OAuth is not fully configured." }, { status: 503 });
+  }
   const token = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
   if (!token) return NextResponse.json({ error: "Authentication required." }, { status: 401 });
   const auth = createClient(url, anonKey, { auth: { persistSession: false } });
