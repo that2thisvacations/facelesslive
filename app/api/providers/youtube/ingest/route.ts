@@ -1,9 +1,12 @@
 import { NextResponse } from "next/server";
+import { authenticatedOwnerId } from "@/lib/request-owner";
 import { findActiveYouTubeBroadcast, getYouTubeAccessToken } from "@/lib/youtube-live";
 
 export async function POST(request: Request) {
-  const ownerId = request.headers.get("x-facelesslive-owner")?.trim();
-  if (!ownerId) return NextResponse.json({ error: "Owner context required." }, { status: 401 });
+  let ownerId: string | null;
+  try { ownerId = await authenticatedOwnerId(request); }
+  catch (error) { return NextResponse.json({ error: error instanceof Error ? error.message : "Authentication unavailable." }, { status: 503 }); }
+  if (!ownerId) return NextResponse.json({ error: "Authentication required." }, { status: 401 });
   try {
     const accessToken = await getYouTubeAccessToken(ownerId);
     const active = await findActiveYouTubeBroadcast(accessToken);
