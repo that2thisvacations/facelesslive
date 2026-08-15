@@ -30,10 +30,14 @@ export async function runYouTubeChatConsumer({ liveChatId, accessToken, onMessag
         throw new Error(body?.error?.message || kind);
       }
 
+      const nextPageToken = body.nextPageToken || pageToken;
+      if (Array.isArray(body.items) && body.items.length) await onMessages(body.items, nextPageToken);
+
+      // Commit the provider checkpoint only after downstream delivery succeeds.
+      pageToken = nextPageToken;
       reconnects = 0;
       delay = 1000;
-      pageToken = body.nextPageToken || pageToken;
-      if (Array.isArray(body.items) && body.items.length) await onMessages(body.items, pageToken);
+
       if (body.offlineAt) return { status: "ended", pageToken, offlineAt: body.offlineAt };
       await sleep(Math.max(1000, Number(body.pollingIntervalMillis || 5000)));
     } catch (error) {
