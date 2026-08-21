@@ -9,8 +9,8 @@ const operatorLinks = [
   { href: "/", label: "Live Studio", icon: Radio },
   { href: "/commerce", label: "Travel Products", icon: Boxes },
   { href: "/rewards", label: "Vacation Rewards", icon: Gift },
-  { href: "/customers", label: "Customers", icon: Users, comingSoon: true },
-  { href: "/analytics", label: "Analytics", icon: BarChart3, comingSoon: true },
+  { href: "/customers", label: "Customers", icon: Users },
+  { href: "/analytics", label: "Analytics", icon: BarChart3 },
 ];
 
 export function AppNav() {
