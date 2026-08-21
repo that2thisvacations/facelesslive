@@ -1,0 +1,13 @@
+import { BarChart3, CircleDollarSign, Eye, MousePointerClick, PackageCheck, Radio, ShieldAlert } from "lucide-react";
+import { aggregateCommerceEvents } from "@/lib/commerce-insights";
+import { channelPolicies } from "@/lib/travel-commerce";
+import "../customers/customers.css";
+import "./analytics.css";
+
+export default function AnalyticsPage() {
+  const insights = aggregateCommerceEvents([]);
+  return <main className="analyticsPage"><section className="analyticsTitle"><p>COMMERCE ANALYTICS</p><h1>Measure the journey.<br/><span>Improve the outcome.</span></h1><div>Track attention, product interest, orders, GMV, affiliate commissions, channel performance, and policy blocks without confusing activity with validated revenue.</div></section><section className="analyticsMetrics"><Metric icon={<Eye/>} label="Impressions" value={insights.totals.impressions.toLocaleString()}/><Metric icon={<MousePointerClick/>} label="Product clicks" value={insights.totals.clicks.toLocaleString()}/><Metric icon={<PackageCheck/>} label="Verified orders" value={insights.totals.orders.toLocaleString()}/><Metric icon={<CircleDollarSign/>} label="GMV" value={money(insights.totals.gmvCents)}/><Metric icon={<BarChart3/>} label="Commission" value={money(insights.totals.commissionCents)}/><Metric icon={<ShieldAlert/>} label="Policy blocks" value={insights.totals.policyBlocks.toLocaleString()}/></section><section className="analyticsGrid"><article className="funnelCard"><h2>Conversion funnel</h2><p>Validated outcomes only</p><Funnel label="Impressions" value={insights.totals.impressions}/><Funnel label="Product clicks" value={insights.totals.clicks}/><Funnel label="Verified orders" value={insights.totals.orders}/><Funnel label="Planning leads" value={0}/></article><article className="channelCard"><h2>Channel readiness</h2><p>Automation mode by destination</p>{Object.values(channelPolicies).map((channel) => <div key={channel.id}><Radio/><span>{channel.name}</span><b>{channel.mode.replace("_", " ")}</b></div>)}</article></section><section className="analyticsEmpty"><BarChart3/><h2>Waiting for authenticated commerce events</h2><p>Charts remain at zero until authorized affiliate connectors, founder authentication, and the governed Supabase event stream are active.</p></section></main>;
+}
+function money(cents: number) { return `$${(cents / 100).toFixed(2)}`; }
+function Metric({ icon, label, value }: { icon: React.ReactNode; label: string; value: string }) { return <article><div>{icon}</div><span>{label}</span><strong>{value}</strong></article>; }
+function Funnel({ label, value }: { label: string; value: number }) { return <div className="funnelRow"><span>{label}</span><b>{value.toLocaleString()}</b><i style={{ width: value ? "100%" : "3%" }}/></div>; }

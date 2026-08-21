@@ -91,7 +91,7 @@ export default function Home() {
   async function next() { if (step === 2 && !script) await generateScript(); setStep((current) => Math.min(current + 1, steps.length - 1)); }
 
   return <main>
-    <header className="topbar"><div className="brand"><span className="brandMark">F</span><span>FacelessLive</span></div><div className="headerActions"><span className="saveMessage">{message}</span><button className="ghostButton compact" onClick={saveDraft}><Save size={16}/> Save Draft</button><span className="buildBadge">STREAM STUDIO</span></div></header>
+    <section className="workspaceActionBar"><div><span className="saveMessage">{message}</span><span className="buildBadge">STREAM STUDIO</span></div><button className="ghostButton compact" onClick={saveDraft}><Save size={16}/> Save Draft</button></section>
     <section className="accountStrip"><AuthPanel onUser={setUser}/></section>
     <section className="builderShell">
       <aside className="builderIntro"><p className="eyebrow">CREATE A FACELESS STREAM</p><h1>Build the show.<br/><span>Skip the camera.</span></h1><p className="heroCopy">Choose a product, assign an AI host, generate the selling script, configure a destination, preview the AI voice, and create the broadcast job.</p><div className="summaryCard"><span>Current build</span><strong>{product.name}</strong><small>{host.name} · {layout}</small></div></aside>

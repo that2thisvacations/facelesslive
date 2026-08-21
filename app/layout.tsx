@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import "./integrations.css";
+import { AppNav } from "@/components/app-nav";
 
 export const metadata: Metadata = {
   title: "FacelessLive | Go Live. Stay Faceless. Sell More.",
@@ -10,7 +11,7 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body><AppNav/>{children}</body>
     </html>
   );
 }
