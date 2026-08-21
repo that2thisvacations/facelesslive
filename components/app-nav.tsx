@@ -2,13 +2,14 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { BarChart3, Bot, Boxes, Gift, Layers3, LayoutDashboard, Radio, Users } from "lucide-react";
+import { BarChart3, Bot, Boxes, Gift, Layers3, LayoutDashboard, Radio, UserPlus, Users } from "lucide-react";
 
 const operatorLinks = [
   { href: "/dashboard", label: "Command Center", icon: LayoutDashboard },
   { href: "/", label: "Live Studio", icon: Radio },
   { href: "/commerce", label: "Products", icon: Boxes },
   { href: "/industries", label: "Commerce Packs", icon: Layers3 },
+  { href: "/onboarding", label: "Workspace Setup", icon: UserPlus },
   { href: "/rewards", label: "Vacation Rewards", icon: Gift },
   { href: "/customers", label: "Customers", icon: Users },
   { href: "/analytics", label: "Analytics", icon: BarChart3 },
