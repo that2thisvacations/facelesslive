@@ -41,11 +41,6 @@ export default function CommercePage() {
   }
 
   return <main className="commercePage">
-    <header className="commerceTopbar">
-      <a className="commerceBrand" href="/"><span>F</span>FacelessLive</a>
-      <div><a href="/vacation-planning">Planning Reward</a><a href="/">Stream Studio</a><b>TRAVEL COMMERCE</b></div>
-    </header>
-
     <section className="commerceHero">
       <div><p>FACELESSLIVE AI™</p><h1>Travel Commerce<br/><span>Command Center</span></h1><div className="commerceLead">Build adaptive affiliate presentations, route them through channel-specific rules, and keep the AI host selling where autonomous operation is permitted.</div></div>
       <div className="networkCard"><Radio/><strong>24/7 NETWORK FOUNDATION</strong><span>Autonomous on owned channels · governed everywhere else</span></div>
