@@ -1,0 +1,20 @@
+.analyticsMetrics { max-width: 1260px; margin: 38px auto 0; display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px; }
+.analyticsMetrics article { padding: 16px; display: grid; gap: 5px; border: 1px solid rgba(255,255,255,.09); border-radius: 15px; background: rgba(10,25,42,.88); }
+.analyticsMetrics article div { color: #f2bd49; }
+.analyticsMetrics span { color: #8397ac; font-size: 9px; text-transform: uppercase; letter-spacing: .08em; }
+.analyticsMetrics strong { font-size: 21px; }
+.analyticsGrid { max-width: 1260px; margin: 16px auto 0; display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
+.funnelCard, .channelCard, .analyticsEmpty { padding: 25px; border: 1px solid rgba(255,255,255,.09); border-radius: 19px; background: rgba(10,25,42,.88); }
+.funnelCard h2, .channelCard h2 { margin: 0; }
+.funnelCard > p, .channelCard > p { color: #8498ad; }
+.funnelRow { margin-top: 18px; display: grid; grid-template-columns: 1fr auto; gap: 7px; color: #b6c4d2; }
+.funnelRow i { grid-column: span 2; height: 6px; min-width: 3%; border-radius: 99px; background: #f2bd49; opacity: .55; }
+.channelCard > div { margin-top: 10px; padding: 12px; display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 10px; border-radius: 11px; background: rgba(255,255,255,.025); }
+.channelCard svg { color: #f2bd49; }
+.channelCard b { color: #93a6ba; font-size: 10px; text-transform: uppercase; }
+.analyticsEmpty { max-width: 1210px; margin: 16px auto 0; text-align: center; }
+.analyticsEmpty svg { color: #f2bd49; }
+.analyticsEmpty h2 { margin: 12px 0 0; }
+.analyticsEmpty p { color: #91a4b8; }
+@media (max-width: 960px) { .analyticsMetrics { grid-template-columns: repeat(3, 1fr); } .analyticsGrid { grid-template-columns: 1fr; } }
+@media (max-width: 560px) { .analyticsMetrics { grid-template-columns: repeat(2, 1fr); } }
