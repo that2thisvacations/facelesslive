@@ -73,6 +73,7 @@ textarea:focus { border-color: var(--gold); }
 .primaryButton, .ghostButton { min-height: 45px; padding: 0 17px; border-radius: 12px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; font-weight: 800; }
 .primaryButton { border: 0; color: #07111f; background: var(--gold); }
 .ghostButton { border: 1px solid var(--line); color: var(--text); background: transparent; }
+.headerLink { text-decoration: none; }
 .full { width: 100%; }
 @media (max-width: 980px) { .builderShell { grid-template-columns: 1fr; } .builderIntro { position: static; padding-bottom: 0; } }
 @media (max-width: 720px) { .topbar { align-items: flex-start; } .headerActions { flex-wrap: wrap; } .saveMessage { width: 100%; order: 3; text-align: right; } .buildBadge { display: none; } .builderShell { padding: 35px 14px 50px; } .step { font-size: 0; } .step > span { font-size: 12px; } .stepContent { padding: 25px 18px; } .choiceGrid, .layoutGrid { grid-template-columns: 1fr; } .choiceCard { min-height: 145px; } .checkList { grid-template-columns: 1fr; } .wizardFooter { padding: 15px; } }
