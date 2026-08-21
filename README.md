@@ -46,6 +46,7 @@ The `/vacation-planning` shopper page presents a configurable post-purchase rewa
 - `/rewards` — internal vacation-reward management
 - `/customers` — protected shopper-to-travel-client journey workspace
 - `/analytics` — validated commerce outcome and channel-readiness reporting
+- `/industries` — governed commerce-pack configurations for travel and additional industries
 - `/vacation-planning` — public shopper reward page
 
 All operator workspaces use one route-aware navigation system. The public reward route receives a simplified customer-safe header instead of exposing internal controls.
