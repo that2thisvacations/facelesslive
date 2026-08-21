@@ -38,6 +38,16 @@ The starter catalog is intentionally unlinked and unverified. Production affilia
 
 The `/vacation-planning` shopper page presents a configurable post-purchase reward. By default, a verified qualifying travel-product purchase of $50 or more can unlock 15% off eligible vacation-planning service fees, capped at $75 and valid for 30 days. The reward does not discount supplier travel components and does not redirect TikTok Shop viewers away from native checkout.
 
+## Unified Application Shell
+
+- `/dashboard` — founder command center and connected customer journey
+- `/` — live stream studio
+- `/commerce` — travel-product ranking and channel-aware automation
+- `/rewards` — internal vacation-reward management
+- `/vacation-planning` — public shopper reward page
+
+All operator workspaces use one route-aware navigation system. The public reward route receives a simplified customer-safe header instead of exposing internal controls.
+
 ## Local Development
 
 ```bash
