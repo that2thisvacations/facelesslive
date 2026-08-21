@@ -20,7 +20,7 @@ export function AppNav() {
   }
   return <header className="unifiedNav">
     <Link className="unifiedBrand" href="/dashboard"><span>F</span><div><strong>FacelessLive AI™</strong><small>Travel Commerce Network</small></div></Link>
-    <nav>{operatorLinks.map(({ href, label, icon: Icon, comingSoon }) => <Link key={href} href={comingSoon ? "/dashboard" : href} className={pathname === href ? "active" : comingSoon ? "comingSoon" : ""}><Icon size={16}/><span>{label}</span>{comingSoon && <small>SOON</small>}</Link>)}</nav>
+    <nav>{operatorLinks.map(({ href, label, icon: Icon }) => <Link key={href} href={href} className={pathname === href ? "active" : ""}><Icon size={16}/><span>{label}</span></Link>)}</nav>
     <div className="operatorBadge"><Bot size={17}/><div><strong>FOUNDER</strong><small>Operator workspace</small></div></div>
   </header>;
 }
