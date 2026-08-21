@@ -1,0 +1,23 @@
+.customersPage, .analyticsPage { min-height: calc(100vh - 76px); padding: 58px 28px 90px; background: radial-gradient(circle at 78% 0, rgba(28,92,134,.38), transparent 32%), #06101d; }
+.customersTitle, .analyticsTitle { max-width: 1260px; margin: 0 auto; }
+.customersTitle > p, .analyticsTitle > p { color: #f2bd49; font-size: 11px; font-weight: 900; letter-spacing: .17em; }
+.customersTitle h1, .analyticsTitle h1 { margin: 12px 0 0; font-size: clamp(46px, 5.5vw, 76px); line-height: 1; }
+.customersTitle h1 span, .analyticsTitle h1 span { color: #f2bd49; }
+.customersTitle > div, .analyticsTitle > div { max-width: 760px; margin-top: 20px; color: #9caec1; font-size: 17px; line-height: 1.6; }
+.customerMetrics { max-width: 1260px; margin: 38px auto 0; display: grid; grid-template-columns: repeat(5, 1fr); gap: 11px; }
+.customerMetrics article { padding: 17px; display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; border: 1px solid rgba(255,255,255,.09); border-radius: 15px; background: rgba(10,25,42,.88); }
+.customerMetrics article div { grid-row: span 2; color: #f2bd49; }
+.customerMetrics span { color: #8397ac; font-size: 9px; text-transform: uppercase; letter-spacing: .08em; }
+.customerMetrics strong { font-size: 22px; }
+.customerPipeline { max-width: 1260px; margin: 16px auto 0; display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; }
+.customerPipeline article { min-height: 190px; padding: 19px; border-left: 2px solid rgba(242,189,73,.45); background: rgba(255,255,255,.025); }
+.customerPipeline article div { color: #f2bd49; }
+.customerPipeline h2 { margin: 26px 0 0; font-size: 18px; }
+.customerPipeline p { color: #8da0b5; font-size: 13px; line-height: 1.45; }
+.customerEmpty { max-width: 1204px; margin: 18px auto 0; padding: 38px; text-align: center; border: 1px dashed rgba(255,255,255,.15); border-radius: 20px; background: rgba(10,25,42,.55); }
+.customerEmpty svg { color: #f2bd49; }
+.customerEmpty h2 { margin: 14px 0 0; }
+.customerEmpty p { max-width: 680px; margin: 10px auto; color: #91a4b8; line-height: 1.55; }
+.customerEmpty span { color: #7de3b2; font-size: 10px; font-weight: 900; letter-spacing: .11em; }
+@media (max-width: 950px) { .customerMetrics { grid-template-columns: repeat(2, 1fr); } .customerPipeline { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 560px) { .customersPage, .analyticsPage { padding: 38px 14px 60px; } .customerMetrics, .customerPipeline { grid-template-columns: 1fr; } }
