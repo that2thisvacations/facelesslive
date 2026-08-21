@@ -22,6 +22,21 @@ FacelessLive is an AI-powered live commerce platform for building, managing, and
 - Chat AI
 - Content Repurposing
 - Analytics
+- Travel Commerce Command Center
+
+## Travel Commerce Automation
+
+The `/commerce` command center adds a governed travel-affiliate foundation:
+
+- starter travel-product intelligence and quality scoring
+- channel-aware autonomous, supervised, and content-only routing
+- adaptive sales-cycle plans and verified-claim guardrails
+- a hard block against unattended or AI-voiced TikTok Shop LIVE launches
+- autonomous eligibility for the owned TravelBuddy shopping network only after affiliate authorization, product verification, current inventory, and an approved affiliate URL are present
+
+The starter catalog is intentionally unlinked and unverified. Production affiliate URLs, prices, inventory, commissions, and credentials must enter through authorized program integrations; the application does not invent or scrape them.
+
+The `/vacation-planning` shopper page presents a configurable post-purchase reward. By default, a verified qualifying travel-product purchase of $50 or more can unlock 15% off eligible vacation-planning service fees, capped at $75 and valid for 30 days. The reward does not discount supplier travel components and does not redirect TikTok Shop viewers away from native checkout.
 
 ## Local Development
 
