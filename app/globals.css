@@ -1,37 +1,27 @@
-:root {
-  --bg: #07111f;
-  --panel: #0d1b2d;
-  --panel-soft: #11243a;
-  --text: #f7f9fc;
-  --muted: #94a6bd;
-  --gold: #f2bd49;
-  --line: rgba(255,255,255,.09);
-}
+:root { color-scheme: dark; --bg:#050914; --panel:#0a1426; --panel-soft:#0f1d34; --text:#f8fafc; --muted:#9ca9bc; --gold:#d7ad4a; --gold-soft:#f2d58a; --cyan:#66d6ff; --line:rgba(255,255,255,.085); --shadow:0 28px 90px rgba(0,0,0,.32); }
 * { box-sizing: border-box; }
 html { scroll-behavior: smooth; }
-body { margin: 0; background: radial-gradient(circle at 80% 0%, #173d60 0, transparent 34%), var(--bg); color: var(--text); font-family: Arial, Helvetica, sans-serif; }
-.unifiedNav, .publicNav { position: sticky; top: 0; z-index: 50; min-height: 76px; padding: 10px 4vw; display: flex; align-items: center; gap: 24px; border-bottom: 1px solid var(--line); background: rgba(6,16,29,.94); backdrop-filter: blur(18px); }
+body { margin:0; min-height:100vh; background:radial-gradient(circle at 76% 0%,rgba(215,173,74,.1),transparent 26%),radial-gradient(circle at 12% 24%,rgba(42,100,180,.16),transparent 34%),linear-gradient(145deg,#050914,#081020 55%,#05070d); color:var(--text); font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+.unifiedNav { position:fixed; inset:0 auto 0 0; z-index:50; width:276px; padding:26px 18px 20px; display:flex; flex-direction:column; border-right:1px solid var(--line); background:linear-gradient(180deg,rgba(6,13,27,.97),rgba(4,9,20,.94)); backdrop-filter:blur(24px); box-shadow:20px 0 60px rgba(0,0,0,.16); }
+.publicNav { position:sticky; top:0; z-index:50; min-height:76px; padding:10px 4vw; display:flex; align-items:center; gap:24px; border-bottom:1px solid var(--line); background:rgba(6,16,29,.94); backdrop-filter:blur(18px); }
 .unifiedBrand { display: flex; align-items: center; gap: 10px; color: #fff; text-decoration: none; white-space: nowrap; }
-.unifiedBrand > span { width: 38px; height: 38px; display: grid; place-items: center; border-radius: 11px; color: #07111f; background: var(--gold); font-weight: 900; }
+.unifiedBrand > span { width:44px; height:44px; display:grid; place-items:center; border-radius:14px; color:#10131a; background:linear-gradient(135deg,var(--gold-soft),var(--gold)); font-size:12px; font-weight:950; box-shadow:0 14px 34px rgba(215,173,74,.22); }
 .unifiedBrand > div { display: grid; gap: 2px; }
-.unifiedBrand strong { font-size: 15px; }
-.unifiedBrand small { color: #8296ac; font-size: 9px; text-transform: uppercase; letter-spacing: .08em; }
-.unifiedNav nav { margin: 0 auto; display: flex; align-items: center; gap: 4px; }
-.unifiedNav nav a { min-height: 38px; padding: 0 10px; display: inline-flex; align-items: center; gap: 7px; border-radius: 9px; color: #91a4b9; text-decoration: none; font-size: 12px; font-weight: 700; }
-.unifiedNav nav a:hover, .unifiedNav nav a.active { color: #fff; background: rgba(242,189,73,.1); }
-.unifiedNav nav a.active { color: var(--gold); }
+.unifiedBrand strong { font-size:16px; letter-spacing:-.02em; }.unifiedBrand small{color:#7f8da2;font-size:8px;text-transform:uppercase;letter-spacing:.09em}
+.navEdition{margin:28px 2px 24px;padding:16px;border:1px solid rgba(215,173,74,.18);border-radius:15px;background:linear-gradient(145deg,rgba(215,173,74,.09),rgba(255,255,255,.025));display:grid;gap:5px}.navEdition>div{display:flex;align-items:center;gap:7px;color:var(--gold-soft);font-size:8px;font-weight:900;letter-spacing:.12em}.navEdition strong{font-size:16px}.navEdition small{color:#7f8da2;font-size:10px}
+.unifiedNav nav{display:grid;gap:5px}.navLabel{padding:0 12px 7px;color:#5f6f84;font-size:8px;font-weight:900;letter-spacing:.16em}.unifiedNav nav a{min-height:43px;padding:0 12px;display:flex;align-items:center;gap:10px;border:1px solid transparent;border-radius:11px;color:#8f9caf;text-decoration:none;font-size:11px;font-weight:750;transition:.18s ease}.unifiedNav nav a:hover,.unifiedNav nav a.active{color:#fff;border-color:rgba(215,173,74,.2);background:rgba(215,173,74,.07);transform:translateX(2px)}.unifiedNav nav a.active{color:var(--gold-soft);box-shadow:inset 3px 0 0 var(--gold)}.navArrow{margin-left:auto;opacity:.3}.unifiedNav nav a.active .navArrow{opacity:.8}
 .unifiedNav nav a.comingSoon { opacity: .5; }
 .unifiedNav nav a small { padding: 2px 4px; border-radius: 4px; color: #f2bd49; background: rgba(242,189,73,.1); font-size: 7px; }
-.operatorBadge { display: flex; align-items: center; gap: 9px; color: var(--gold); }
+.navTrust{margin-top:auto;padding:14px;display:flex;gap:10px;border-top:1px solid var(--line);color:#65d5ff}.navTrust>div{display:grid;gap:3px}.navTrust strong{color:#b9eaff;font-size:10px}.navTrust small{color:#66788d;font-size:9px}.operatorBadge { margin-top:12px;padding:13px;display:flex;align-items:center;gap:9px;border:1px solid var(--line);border-radius:13px;background:rgba(255,255,255,.025);color:var(--gold);position:relative }
 .operatorBadge > div { display: grid; }
 .operatorBadge strong { font-size: 9px; letter-spacing: .1em; }
-.operatorBadge small { color: #8296ac; font-size: 9px; }
+.operatorBadge small{color:#8296ac;font-size:8px}.operatorBadge i{position:absolute;right:12px;width:7px;height:7px;border-radius:50%;background:#54d993;box-shadow:0 0 12px #54d993}
 .publicNav { justify-content: space-between; }
 .publicNavLink { color: #b7c5d4; text-decoration: none; font-size: 12px; }
 button, textarea { font: inherit; }
 button { cursor: pointer; }
 button:disabled { cursor: not-allowed; opacity: .35; }
-main { min-height: 100vh; }
+main{min-height:100vh}.unifiedNav+main{margin-left:276px}
 .topbar { min-height: 74px; display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 12px 5vw; border-bottom: 1px solid var(--line); background: rgba(7,17,31,.82); backdrop-filter: blur(18px); }
 .brand { display: flex; align-items: center; gap: 12px; font-size: 18px; font-weight: 800; letter-spacing: -.03em; }
 .brandMark { width: 36px; height: 36px; display: grid; place-items: center; border-radius: 11px; color: #07111f; background: var(--gold); }
@@ -95,7 +85,7 @@ textarea:focus { border-color: var(--gold); }
 .ghostButton { border: 1px solid var(--line); color: var(--text); background: transparent; }
 .headerLink { text-decoration: none; }
 .full { width: 100%; }
-@media (max-width: 1100px) { .operatorBadge { display: none; } .unifiedNav { overflow-x: auto; } .unifiedNav nav { margin-left: auto; } }
-@media (max-width: 980px) { .builderShell { grid-template-columns: 1fr; } .builderIntro { position: static; padding-bottom: 0; } .unifiedNav { align-items: flex-start; flex-wrap: wrap; } .unifiedNav nav { width: 100%; overflow-x: auto; } }
-@media (max-width: 620px) { .unifiedNav nav a span { display: none; } .unifiedNav nav a { padding: 0 12px; } }
+@media(max-width:1100px){.unifiedNav{position:sticky;inset:auto;top:0;width:100%;height:auto;padding:10px 18px;flex-direction:row;align-items:center;overflow-x:auto;border-right:0;border-bottom:1px solid var(--line)}.unifiedNav .unifiedBrand{min-width:max-content}.navEdition,.navTrust,.operatorBadge,.navLabel{display:none}.unifiedNav nav{display:flex;margin-left:auto}.unifiedNav nav a{min-width:max-content}.unifiedNav nav a:hover,.unifiedNav nav a.active{transform:none}.navArrow{display:none}.unifiedNav+main{margin-left:0}}
+@media (max-width: 980px) { .builderShell { grid-template-columns: 1fr; } .builderIntro { position: static; padding-bottom: 0; } }
+@media(max-width:620px){.unifiedNav{padding:9px 12px}.unifiedBrand>div{display:none}.unifiedNav nav a span{display:none}.unifiedNav nav a{padding:0 11px}.unifiedBrand>span{width:40px;height:40px}}
 @media (max-width: 720px) { .topbar { align-items: flex-start; } .headerActions { flex-wrap: wrap; } .saveMessage { width: 100%; order: 3; text-align: right; } .buildBadge { display: none; } .builderShell { padding: 35px 14px 50px; } .step { font-size: 0; } .step > span { font-size: 12px; } .stepContent { padding: 25px 18px; } .choiceGrid, .layoutGrid { grid-template-columns: 1fr; } .choiceCard { min-height: 145px; } .checkList { grid-template-columns: 1fr; } .wizardFooter { padding: 15px; } }
