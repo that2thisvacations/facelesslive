@@ -117,6 +117,7 @@ export async function POST(request: Request) {
         await admin.from("stream_jobs").update({ status: "error", error_message: "No active YouTube broadcast with live chat was found.", updated_at: new Date().toISOString() }).eq("id", job.id);
         return NextResponse.json({ error: "No active YouTube broadcast with live chat was found." }, { status: 409 });
       }
+
       const { data: mapping, error: mappingError } = await admin.from("live_stream_mappings")
         .select("stream_job_id")
         .eq("owner_id", authData.user.id)
@@ -124,20 +125,31 @@ export async function POST(request: Request) {
         .eq("external_stream_id", active.broadcastId)
         .maybeSingle();
       if (mappingError) throw mappingError;
+
       if (mapping?.stream_job_id && mapping.stream_job_id !== job.id) {
-        await admin.from("stream_jobs").update({ status: "error", error_message: "The active YouTube broadcast is mapped to a different stream job.", updated_at: new Date().toISOString() }).eq("id", job.id);
-        return NextResponse.json({ error: "The active YouTube broadcast is mapped to a different stream job." }, { status: 409 });
+        const { data: mappedJob, error: mappedJobError } = await admin.from("stream_jobs")
+          .select("id,status")
+          .eq("id", mapping.stream_job_id)
+          .eq("owner_id", authData.user.id)
+          .maybeSingle();
+        if (mappedJobError) throw mappedJobError;
+        if (mappedJob && ["queued", "starting", "live"].includes(mappedJob.status)) {
+          await admin.from("stream_jobs").update({ status: "error", error_message: "The active YouTube broadcast is already mapped to another active stream job.", updated_at: new Date().toISOString() }).eq("id", job.id);
+          return NextResponse.json({ error: "The active YouTube broadcast is already mapped to another active stream job." }, { status: 409 });
+        }
       }
-      if (!mapping?.stream_job_id) {
-        const { error: mappingInsertError } = await admin.from("live_stream_mappings").upsert({
+
+      if (mapping?.stream_job_id !== job.id) {
+        const { error: mappingUpsertError } = await admin.from("live_stream_mappings").upsert({
           owner_id: authData.user.id,
           platform: "youtube",
           external_stream_id: active.broadcastId,
           stream_job_id: job.id,
           updated_at: new Date().toISOString(),
         }, { onConflict: "owner_id,platform,external_stream_id" });
-        if (mappingInsertError) throw mappingInsertError;
+        if (mappingUpsertError) throw mappingUpsertError;
       }
+
       youtube = { externalStreamId: active.broadcastId, liveChatId: active.liveChatId, accessToken };
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to prepare YouTube live ingestion.";
