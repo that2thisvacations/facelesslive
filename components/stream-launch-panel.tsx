@@ -53,8 +53,11 @@ export function StreamLaunchPanel({ user, script, productName, productImageUrl, 
   const selectedDestination = useMemo(() => destinations.find((item) => item.id === destinationId) || null, [destinations, destinationId]);
   const liveEventEnabled = Boolean(broadcastJobId && ["starting", "live"].includes(broadcastStatus));
 
-  useEffect(() => { if (!user) { setDestinations([]); setDestinationId(""); return; } void loadDestinations(); }, [user]);
-  useEffect(() => { setScenePlan(null); }, [productName, productImageUrl, layout]);
+  useEffect(() => { if (user) void loadDestinations(); }, [user]);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setScenePlan(null), 0);
+    return () => window.clearTimeout(timer);
+  }, [productName, productImageUrl, layout]);
   useEffect(() => () => { if (audioUrl) URL.revokeObjectURL(audioUrl); }, [audioUrl]);
   useEffect(() => {
     if (!presenterJobId || !ACTIVE_PRESENTER.has(presenterStatus)) return;
