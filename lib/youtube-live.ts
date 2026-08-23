@@ -19,13 +19,15 @@ export class YouTubeConnectionError extends Error {
   code: string;
   requiresReconnect: boolean;
   transient: boolean;
+  observedUpdatedAt: string | null;
 
-  constructor(message: string, options: { code: string; requiresReconnect?: boolean; transient?: boolean }) {
+  constructor(message: string, options: { code: string; requiresReconnect?: boolean; transient?: boolean; observedUpdatedAt?: string | null }) {
     super(message);
     this.name = "YouTubeConnectionError";
     this.code = options.code;
     this.requiresReconnect = Boolean(options.requiresReconnect);
     this.transient = Boolean(options.transient);
+    this.observedUpdatedAt = options.observedUpdatedAt || null;
   }
 }
 
@@ -118,7 +120,11 @@ async function refreshYouTubeTokens(connection: StoredConnection, tokens: TokenS
 async function forceRefreshYouTubeAccessToken(ownerId: string) {
   const connection = await loadYouTubeConnection(ownerId);
   const tokens = decryptProviderTokens(connection.encrypted_tokens) as TokenSet;
-  return (await refreshYouTubeTokens(connection, tokens)).tokens.access_token as string;
+  const refreshed = await refreshYouTubeTokens(connection, tokens);
+  return {
+    accessToken: refreshed.tokens.access_token as string,
+    updatedAt: refreshed.updatedAt,
+  };
 }
 
 export async function getYouTubeAccessToken(ownerId: string) {
@@ -135,11 +141,24 @@ async function fetchYouTubeChannel(accessToken: string) {
   url.searchParams.set("part", "id,snippet");
   url.searchParams.set("mine", "true");
   url.searchParams.set("maxResults", "1");
-  const response = await fetch(url, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-    cache: "no-store",
-    signal: AbortSignal.timeout(8000),
-  });
+
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      cache: "no-store",
+      signal: AbortSignal.timeout(8000),
+    });
+  } catch (error) {
+    if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) {
+      throw new YouTubeConnectionError("YouTube channel probe timed out.", {
+        code: "probe_timeout",
+        transient: true,
+      });
+    }
+    throw error;
+  }
+
   const body = await response.json() as {
     items?: Array<{ id?: string; snippet?: { title?: string } }>;
     error?: { message?: string };
@@ -151,9 +170,12 @@ export async function probeYouTubeConnection(ownerId: string) {
   let accessToken = await getYouTubeAccessToken(ownerId);
   let { response, body } = await fetchYouTubeChannel(accessToken);
   let refreshedAfter401 = false;
+  let observedUpdatedAt: string | null = null;
 
   if (response.status === 401) {
-    accessToken = await forceRefreshYouTubeAccessToken(ownerId);
+    const refreshed = await forceRefreshYouTubeAccessToken(ownerId);
+    accessToken = refreshed.accessToken;
+    observedUpdatedAt = refreshed.updatedAt;
     refreshedAfter401 = true;
     ({ response, body } = await fetchYouTubeChannel(accessToken));
   }
@@ -164,6 +186,7 @@ export async function probeYouTubeConnection(ownerId: string) {
       code: `probe_http_${response.status}`,
       requiresReconnect,
       transient: response.status === 429 || response.status >= 500,
+      observedUpdatedAt,
     });
   }
 
