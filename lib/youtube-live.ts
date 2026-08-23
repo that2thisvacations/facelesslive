@@ -36,6 +36,23 @@ function adminClient() {
   return createClient(url, key, { auth: { persistSession: false } });
 }
 
+async function loadYouTubeConnection(ownerId: string) {
+  const { data, error } = await adminClient().from("provider_connections")
+    .select("owner_id,encrypted_tokens,expires_at")
+    .eq("owner_id", ownerId)
+    .eq("provider", "youtube")
+    .eq("status", "connected")
+    .maybeSingle();
+  if (error) throw error;
+  if (!data?.encrypted_tokens) {
+    throw new YouTubeConnectionError("YouTube is not connected.", {
+      code: "not_connected",
+      requiresReconnect: true,
+    });
+  }
+  return data as StoredConnection;
+}
+
 async function refreshYouTubeTokens(connection: StoredConnection, tokens: TokenSet) {
   const clientId = process.env.YOUTUBE_CLIENT_ID;
   const clientSecret = process.env.YOUTUBE_CLIENT_SECRET;
@@ -86,22 +103,14 @@ async function refreshYouTubeTokens(connection: StoredConnection, tokens: TokenS
   return { tokens: merged, expiresAt, updatedAt };
 }
 
-export async function getYouTubeAccessToken(ownerId: string) {
-  const { data, error } = await adminClient().from("provider_connections")
-    .select("owner_id,encrypted_tokens,expires_at")
-    .eq("owner_id", ownerId)
-    .eq("provider", "youtube")
-    .eq("status", "connected")
-    .maybeSingle();
-  if (error) throw error;
-  if (!data?.encrypted_tokens) {
-    throw new YouTubeConnectionError("YouTube is not connected.", {
-      code: "not_connected",
-      requiresReconnect: true,
-    });
-  }
+async function forceRefreshYouTubeAccessToken(ownerId: string) {
+  const connection = await loadYouTubeConnection(ownerId);
+  const tokens = decryptProviderTokens(connection.encrypted_tokens) as TokenSet;
+  return (await refreshYouTubeTokens(connection, tokens)).tokens.access_token as string;
+}
 
-  const connection = data as StoredConnection;
+export async function getYouTubeAccessToken(ownerId: string) {
+  const connection = await loadYouTubeConnection(ownerId);
   const tokens = decryptProviderTokens(connection.encrypted_tokens) as TokenSet;
   const expiresAt = connection.expires_at ? Date.parse(connection.expires_at) : 0;
   const needsRefresh = !tokens.access_token || !expiresAt || expiresAt <= Date.now() + 60_000;
@@ -109,8 +118,7 @@ export async function getYouTubeAccessToken(ownerId: string) {
   return tokens.access_token as string;
 }
 
-export async function probeYouTubeConnection(ownerId: string) {
-  const accessToken = await getYouTubeAccessToken(ownerId);
+async function fetchYouTubeChannel(accessToken: string) {
   const url = new URL("https://www.googleapis.com/youtube/v3/channels");
   url.searchParams.set("part", "id,snippet");
   url.searchParams.set("mine", "true");
@@ -124,13 +132,25 @@ export async function probeYouTubeConnection(ownerId: string) {
     items?: Array<{ id?: string; snippet?: { title?: string } }>;
     error?: { message?: string };
   };
+  return { response, body };
+}
+
+export async function probeYouTubeConnection(ownerId: string) {
+  let accessToken = await getYouTubeAccessToken(ownerId);
+  let { response, body } = await fetchYouTubeChannel(accessToken);
+
+  if (response.status === 401) {
+    accessToken = await forceRefreshYouTubeAccessToken(ownerId);
+    ({ response, body } = await fetchYouTubeChannel(accessToken));
+  }
+
   if (!response.ok) {
     throw new YouTubeConnectionError(body.error?.message || `YouTube health probe returned ${response.status}.`, {
       code: `probe_http_${response.status}`,
-      requiresReconnect: response.status === 401,
       transient: response.status === 429 || response.status >= 500,
     });
   }
+
   const channel = body.items?.[0];
   const { data: connection, error: connectionError } = await adminClient()
     .from("provider_connections")
