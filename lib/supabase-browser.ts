@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any -- Database schema types are not generated in this repository; the browser client intentionally remains schema-agnostic. */
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
 let client: SupabaseClient<any> | null = null;
