@@ -46,7 +46,8 @@ function sanitizeHealth(job: WorkerJob) {
 }
 
 async function workerFetch(path: string, init: RequestInit = {}) {
-  const workerBase = (process.env.BROADCAST_WORKER_URL || "").replace(/\/$/, "");
+  const configuredWorkerUrl = process.env.BROADCAST_WORKER_URL || "";
+  const workerBase = configuredWorkerUrl.replace(/\/broadcast\/?$/, "").replace(/\/$/, "");
   const workerToken = process.env.BROADCAST_WORKER_TOKEN;
   if (!workerBase) throw new Error("BROADCAST_WORKER_URL is not configured.");
 
