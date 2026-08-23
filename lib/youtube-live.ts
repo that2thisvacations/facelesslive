@@ -40,10 +40,15 @@ async function refreshYouTubeTokens(connection: StoredConnection, tokens: TokenS
   const clientId = process.env.YOUTUBE_CLIENT_ID;
   const clientSecret = process.env.YOUTUBE_CLIENT_SECRET;
   const refreshToken = typeof tokens.refresh_token === "string" ? tokens.refresh_token : null;
-  if (!clientId || !clientSecret || !refreshToken) {
+  if (!refreshToken) {
     throw new YouTubeConnectionError("YouTube authorization must be reconnected.", {
-      code: "missing_refresh_credentials",
+      code: "missing_refresh_token",
       requiresReconnect: true,
+    });
+  }
+  if (!clientId || !clientSecret) {
+    throw new YouTubeConnectionError("YouTube OAuth client configuration is unavailable.", {
+      code: "oauth_client_unconfigured",
     });
   }
 
@@ -56,7 +61,7 @@ async function refreshYouTubeTokens(connection: StoredConnection, tokens: TokenS
   const refreshed = await response.json() as TokenSet;
   if (!response.ok || typeof refreshed.access_token !== "string") {
     const code = typeof refreshed.error === "string" ? refreshed.error : `refresh_http_${response.status}`;
-    const requiresReconnect = code === "invalid_grant" || code === "invalid_client" || response.status === 401;
+    const requiresReconnect = code === "invalid_grant";
     throw new YouTubeConnectionError(
       requiresReconnect ? "YouTube authorization must be reconnected." : "YouTube access-token refresh failed.",
       {
