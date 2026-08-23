@@ -66,6 +66,31 @@ export async function getYouTubeAccessToken(ownerId: string) {
   return tokens.access_token as string;
 }
 
+export async function probeYouTubeConnection(ownerId: string) {
+  const accessToken = await getYouTubeAccessToken(ownerId);
+  const url = new URL("https://www.googleapis.com/youtube/v3/channels");
+  url.searchParams.set("part", "id,snippet");
+  url.searchParams.set("mine", "true");
+  url.searchParams.set("maxResults", "1");
+  const response = await fetch(url, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+    cache: "no-store",
+    signal: AbortSignal.timeout(8000),
+  });
+  const body = await response.json() as {
+    items?: Array<{ id?: string; snippet?: { title?: string } }>;
+    error?: { message?: string };
+  };
+  if (!response.ok) throw new Error(body.error?.message || `YouTube health probe returned ${response.status}.`);
+  const channel = body.items?.[0];
+  return {
+    ok: true as const,
+    provider: "youtube" as const,
+    accountId: channel?.id || null,
+    accountName: channel?.snippet?.title || null,
+  };
+}
+
 export async function findActiveYouTubeBroadcast(accessToken: string) {
   const url = new URL("https://www.googleapis.com/youtube/v3/liveBroadcasts");
   url.searchParams.set("part", "id,snippet,status");
