@@ -42,11 +42,12 @@ async function report(jobId, status, error) {
   jobs.set(jobId, { ...current, status, error: error || null, updatedAt: new Date().toISOString() });
   if (!APP_URL || !CALLBACK_SECRET) return;
   try {
-    await fetch(`${APP_URL}/api/broadcast/callback`, {
+    const response = await fetch(`${APP_URL}/api/broadcast/callback`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${CALLBACK_SECRET}` },
       body: JSON.stringify({ jobId, status, error: error || undefined }),
     });
+    if (!response.ok) console.error("callback_rejected", jobId, status, response.status);
   } catch (callbackError) {
     console.error("callback_failed", jobId, callbackError);
   }
@@ -212,7 +213,6 @@ async function enqueueSpeech(jobId, payload) {
 
 async function startYouTubeIngestion(jobId, job, youtube) {
   if (!youtube?.liveChatId || !youtube?.accessToken || !youtube?.externalStreamId) return;
-  if (!APP_URL || !LIVE_CONNECTOR_SECRET) throw new Error("YouTube ingestion requires FACELESSLIVE_APP_URL and LIVE_CONNECTOR_SECRET.");
 
   const controller = new AbortController();
   job.youtube = {
@@ -228,6 +228,16 @@ async function startYouTubeIngestion(jobId, job, youtube) {
     liveChatId: youtube.liveChatId,
     accessToken: youtube.accessToken,
     signal: controller.signal,
+    refreshAccessToken: async () => {
+      const response = await fetch(`${APP_URL}/api/providers/youtube/worker-token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${CALLBACK_SECRET}` },
+        body: JSON.stringify({ jobId }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok || !body?.accessToken) throw new Error(body?.error || `YouTube token refresh returned ${response.status}.`);
+      return body.accessToken;
+    },
     onStatus: (status) => {
       const current = jobs.get(jobId);
       if (!current) return;
@@ -250,7 +260,7 @@ async function startYouTubeIngestion(jobId, job, youtube) {
       current.youtube = { ...current.youtube, ...result, updatedAt: new Date().toISOString() };
       current.updatedAt = new Date().toISOString();
     }
-    if (result.status === "reauthorize") await report(jobId, "reauthorize", "YouTube authorization must be reconnected.");
+    if (result.status === "reauthorize") await report(jobId, "error", "YouTube authorization must be reconnected.");
     return result;
   }).catch(async (error) => {
     const current = jobs.get(jobId);
@@ -258,7 +268,7 @@ async function startYouTubeIngestion(jobId, job, youtube) {
       current.youtube = { ...current.youtube, status: "error", error: error instanceof Error ? error.message : String(error), updatedAt: new Date().toISOString() };
       current.updatedAt = new Date().toISOString();
     }
-    await report(jobId, "ingestion_error", error instanceof Error ? error.message : "YouTube ingestion failed.");
+    await report(jobId, "error", `YouTube ingestion failed: ${error instanceof Error ? error.message : "unknown error"}`);
     return { status: "error" };
   });
 }
@@ -268,6 +278,9 @@ async function startJob(payload) {
   if (!jobId || !destination?.serverUrl || !destination?.streamKey) throw new Error("jobId and RTMP destination credentials are required.");
   if (!presenter?.mediaUrl) throw new Error("A ready presenter mediaUrl is required for this worker.");
   if (jobs.get(jobId)?.process) throw new Error("Broadcast job is already running.");
+  if (youtube?.liveChatId && (!APP_URL || !LIVE_CONNECTOR_SECRET || !CALLBACK_SECRET)) {
+    throw new Error("YouTube ingestion requires FACELESSLIVE_APP_URL, LIVE_CONNECTOR_SECRET, and BROADCAST_CALLBACK_SECRET.");
+  }
 
   const output = buildOutputUrl(destination.serverUrl, destination.streamKey);
   const scene = buildSceneFilters(jobId, scenePlan);
@@ -323,7 +336,6 @@ async function startJob(payload) {
   };
   jobs.set(jobId, job);
   startSpeechFeeder(job);
-  await startYouTubeIngestion(jobId, job, youtube);
 
   let liveReported = false;
   child.stderr.on("data", async (chunk) => {
@@ -349,6 +361,14 @@ async function startJob(payload) {
     if (code === 0 || signal === "SIGTERM") await report(jobId, "ended");
     else await report(jobId, "error", `FFmpeg exited with code ${code ?? "unknown"}.`);
   });
+
+  try {
+    await startYouTubeIngestion(jobId, job, youtube);
+  } catch (error) {
+    job.youtubeAbortController?.abort();
+    child.kill("SIGTERM");
+    throw error;
+  }
 }
 
 const server = createServer(async (req, res) => {
