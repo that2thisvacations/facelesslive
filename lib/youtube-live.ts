@@ -24,6 +24,25 @@ type ChannelBody = {
   };
 };
 
+type YouTubeProbeResult = {
+  ok: true;
+  provider: "youtube";
+  accountId: string | null;
+  accountName: string | null;
+  expiresAt: string | null;
+  updatedAt: string | null;
+};
+
+type YouTubeProbeCacheEntry = {
+  connectionUpdatedAt: string | null;
+  checkedAtMs: number;
+  result?: YouTubeProbeResult;
+  error?: YouTubeConnectionError;
+};
+
+const YOUTUBE_PROBE_CACHE_TTL_MS = 60_000;
+const youtubeProbeCache = new Map<string, YouTubeProbeCacheEntry>();
+
 export class YouTubeConnectionError extends Error {
   code: string;
   requiresReconnect: boolean;
@@ -47,8 +66,21 @@ function adminClient() {
   return createClient(url, key, { auth: { persistSession: false } });
 }
 
-async function parseJsonBody<T>(response: Response): Promise<T | null> {
-  const text = await response.text();
+async function parseJsonBody<T>(response: Response, context: "refresh" | "probe"): Promise<T | null> {
+  let text: string;
+  try {
+    text = await response.text();
+  } catch (error) {
+    const timedOut = error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
+    const label = context === "refresh" ? "access-token refresh" : "channel probe";
+    throw new YouTubeConnectionError(
+      timedOut ? `YouTube ${label} timed out while reading the provider response.` : `YouTube ${label} lost the provider connection while reading the response.`,
+      {
+        code: `${context}_body_${timedOut ? "timeout" : "transport_error"}`,
+        transient: true,
+      },
+    );
+  }
   if (!text) return null;
   try {
     return JSON.parse(text) as T;
@@ -110,7 +142,7 @@ async function refreshYouTubeTokens(connection: StoredConnection, tokens: TokenS
     );
   }
 
-  const refreshed = await parseJsonBody<TokenSet>(response);
+  const refreshed = await parseJsonBody<TokenSet>(response, "refresh");
   if (!response.ok || typeof refreshed?.access_token !== "string") {
     const code = typeof refreshed?.error === "string" ? refreshed.error : `refresh_http_${response.status}`;
     const requiresReconnect = code === "invalid_grant";
@@ -210,7 +242,7 @@ async function fetchYouTubeChannel(accessToken: string) {
     );
   }
 
-  const body = await parseJsonBody<ChannelBody>(response);
+  const body = await parseJsonBody<ChannelBody>(response, "probe");
   return { response, body: body || {} };
 }
 
@@ -219,47 +251,84 @@ function isRetryableYouTube403(body: ChannelBody) {
   return body.error?.errors?.some((entry) => entry.reason && retryableReasons.has(entry.reason)) === true;
 }
 
-export async function probeYouTubeConnection(ownerId: string) {
-  let accessToken = await getYouTubeAccessToken(ownerId);
-  let { response, body } = await fetchYouTubeChannel(accessToken);
-  let refreshedAfter401 = false;
-  let observedUpdatedAt: string | null = null;
-
-  if (response.status === 401) {
-    const refreshed = await forceRefreshYouTubeAccessToken(ownerId);
-    accessToken = refreshed.accessToken;
-    observedUpdatedAt = refreshed.updatedAt;
-    refreshedAfter401 = true;
-    ({ response, body } = await fetchYouTubeChannel(accessToken));
+export async function probeYouTubeConnection(ownerId: string): Promise<YouTubeProbeResult> {
+  const connectionAtStart = await loadYouTubeConnection(ownerId);
+  const cached = youtubeProbeCache.get(ownerId);
+  if (
+    cached
+    && cached.connectionUpdatedAt === connectionAtStart.updated_at
+    && Date.now() - cached.checkedAtMs < YOUTUBE_PROBE_CACHE_TTL_MS
+  ) {
+    if (cached.error) throw cached.error;
+    if (cached.result) return cached.result;
   }
 
-  if (!response.ok) {
-    const requiresReconnect = refreshedAfter401 && response.status === 401;
-    const transient = response.status === 429 || response.status >= 500 || (response.status === 403 && isRetryableYouTube403(body));
-    throw new YouTubeConnectionError(body.error?.message || `YouTube health probe returned ${response.status}.`, {
-      code: `probe_http_${response.status}`,
-      requiresReconnect,
-      transient,
-      observedUpdatedAt,
+  try {
+    let accessToken = await getYouTubeAccessToken(ownerId);
+    let { response, body } = await fetchYouTubeChannel(accessToken);
+    let refreshedAfter401 = false;
+    let observedUpdatedAt: string | null = null;
+
+    if (response.status === 401) {
+      const refreshed = await forceRefreshYouTubeAccessToken(ownerId);
+      accessToken = refreshed.accessToken;
+      observedUpdatedAt = refreshed.updatedAt;
+      refreshedAfter401 = true;
+      ({ response, body } = await fetchYouTubeChannel(accessToken));
+    }
+
+    if (!response.ok) {
+      const requiresReconnect = refreshedAfter401 && response.status === 401;
+      const transient = response.status === 429 || response.status >= 500 || (response.status === 403 && isRetryableYouTube403(body));
+      throw new YouTubeConnectionError(body.error?.message || `YouTube health probe returned ${response.status}.`, {
+        code: `probe_http_${response.status}`,
+        requiresReconnect,
+        transient,
+        observedUpdatedAt,
+      });
+    }
+
+    const channel = body.items?.[0];
+    const { data: connection, error: connectionError } = await adminClient()
+      .from("provider_connections")
+      .select("expires_at,updated_at")
+      .eq("owner_id", ownerId)
+      .eq("provider", "youtube")
+      .maybeSingle();
+    if (connectionError) throw connectionError;
+
+    const result: YouTubeProbeResult = {
+      ok: true,
+      provider: "youtube",
+      accountId: channel?.id || null,
+      accountName: channel?.snippet?.title || null,
+      expiresAt: connection?.expires_at || null,
+      updatedAt: connection?.updated_at || null,
+    };
+    youtubeProbeCache.set(ownerId, {
+      connectionUpdatedAt: result.updatedAt,
+      checkedAtMs: Date.now(),
+      result,
     });
+    return result;
+  } catch (error) {
+    if (error instanceof YouTubeConnectionError && !error.requiresReconnect) {
+      let latestUpdatedAt = error.observedUpdatedAt || connectionAtStart.updated_at;
+      try {
+        latestUpdatedAt = (await loadYouTubeConnection(ownerId)).updated_at;
+      } catch {
+        // Preserve the best-known connection version if the row changed while handling the failure.
+      }
+      youtubeProbeCache.set(ownerId, {
+        connectionUpdatedAt: latestUpdatedAt,
+        checkedAtMs: Date.now(),
+        error,
+      });
+    } else {
+      youtubeProbeCache.delete(ownerId);
+    }
+    throw error;
   }
-
-  const channel = body.items?.[0];
-  const { data: connection, error: connectionError } = await adminClient()
-    .from("provider_connections")
-    .select("expires_at,updated_at")
-    .eq("owner_id", ownerId)
-    .eq("provider", "youtube")
-    .maybeSingle();
-  if (connectionError) throw connectionError;
-  return {
-    ok: true as const,
-    provider: "youtube" as const,
-    accountId: channel?.id || null,
-    accountName: channel?.snippet?.title || null,
-    expiresAt: connection?.expires_at || null,
-    updatedAt: connection?.updated_at || null,
-  };
 }
 
 export async function findActiveYouTubeBroadcast(accessToken: string) {
