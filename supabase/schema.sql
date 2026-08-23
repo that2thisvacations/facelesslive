@@ -68,6 +68,7 @@ create table if not exists public.stream_jobs (
   presenter_job_id uuid references public.presenter_jobs(id) on delete set null,
   status text not null default 'ready' check (status in ('ready','queued','starting','live','ended','error')),
   error_message text,
+  ingestion_health jsonb not null default '{}'::jsonb,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   unique (id, owner_id)
@@ -120,10 +121,13 @@ create table if not exists public.live_response_policies (
 alter table public.live_events add column if not exists external_event_id text;
 alter table public.live_events add column if not exists speech_status text not null default 'not_requested';
 alter table public.live_events add column if not exists response_spoken_at timestamptz;
+alter table public.stream_jobs add column if not exists ingestion_health jsonb not null default '{}'::jsonb;
 create unique index if not exists live_events_source_external_event_uidx on public.live_events(source, external_event_id) where external_event_id is not null;
 create index if not exists live_stream_mappings_lookup_idx on public.live_stream_mappings(platform, external_stream_id);
 create index if not exists live_events_spoken_idx on public.live_events(stream_job_id, response_spoken_at desc) where response_spoken_at is not null;
 create unique index if not exists stream_jobs_id_owner_uidx on public.stream_jobs(id, owner_id);
+create index if not exists stream_jobs_ingestion_health_status_idx on public.stream_jobs ((ingestion_health->>'status')) where ingestion_health <> '{}'::jsonb;
+comment on column public.stream_jobs.ingestion_health is 'Provider-neutral ingestion telemetry. Stores status, provider, retry counters, last activity, and sanitized errors; never OAuth tokens or secrets.';
 
 create or replace function public.reserve_auto_speech_slot(
   p_event_id uuid,
