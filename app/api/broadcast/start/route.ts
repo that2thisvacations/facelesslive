@@ -1,6 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
 import { decryptStreamCredentials } from "@/lib/stream-credentials";
+import { findActiveYouTubeBroadcast, getYouTubeAccessToken } from "@/lib/youtube-live";
 
 type Scene = { id?: string; start?: number; end?: number; title?: string; subtitle?: string; position?: string };
 type ScenePlan = { version?: number; layout?: string; scenes?: Scene[] };
@@ -107,6 +108,44 @@ export async function POST(request: Request) {
     }, { status: 202 });
   }
 
+  let youtube: { externalStreamId: string; liveChatId: string; accessToken: string } | null = null;
+  if (String(destination.provider || "").toLowerCase() === "youtube") {
+    try {
+      const accessToken = await getYouTubeAccessToken(authData.user.id);
+      const active = await findActiveYouTubeBroadcast(accessToken);
+      if (!active) {
+        await admin.from("stream_jobs").update({ status: "error", error_message: "No active YouTube broadcast with live chat was found.", updated_at: new Date().toISOString() }).eq("id", job.id);
+        return NextResponse.json({ error: "No active YouTube broadcast with live chat was found." }, { status: 409 });
+      }
+      const { data: mapping, error: mappingError } = await admin.from("live_stream_mappings")
+        .select("stream_job_id")
+        .eq("owner_id", authData.user.id)
+        .eq("platform", "youtube")
+        .eq("external_stream_id", active.broadcastId)
+        .maybeSingle();
+      if (mappingError) throw mappingError;
+      if (mapping?.stream_job_id && mapping.stream_job_id !== job.id) {
+        await admin.from("stream_jobs").update({ status: "error", error_message: "The active YouTube broadcast is mapped to a different stream job.", updated_at: new Date().toISOString() }).eq("id", job.id);
+        return NextResponse.json({ error: "The active YouTube broadcast is mapped to a different stream job." }, { status: 409 });
+      }
+      if (!mapping?.stream_job_id) {
+        const { error: mappingInsertError } = await admin.from("live_stream_mappings").upsert({
+          owner_id: authData.user.id,
+          platform: "youtube",
+          external_stream_id: active.broadcastId,
+          stream_job_id: job.id,
+          updated_at: new Date().toISOString(),
+        }, { onConflict: "owner_id,platform,external_stream_id" });
+        if (mappingInsertError) throw mappingInsertError;
+      }
+      youtube = { externalStreamId: active.broadcastId, liveChatId: active.liveChatId, accessToken };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to prepare YouTube live ingestion.";
+      await admin.from("stream_jobs").update({ status: "error", error_message: message, updated_at: new Date().toISOString() }).eq("id", job.id);
+      return NextResponse.json({ error: message }, { status: /reconnect|authorization/i.test(message) ? 401 : 502 });
+    }
+  }
+
   try {
     const workerResponse = await fetch(workerUrl, {
       method: "POST",
@@ -121,13 +160,14 @@ export async function POST(request: Request) {
         presenter: presenter ? { jobId: presenter.id, mediaUrl: presenter.media_url } : null,
         scenePlan,
         product: productImageUrl ? { imageUrl: productImageUrl } : null,
+        youtube,
       }),
       cache: "no-store",
     });
 
     if (!workerResponse.ok) throw new Error(`Broadcast worker returned ${workerResponse.status}.`);
     await admin.from("stream_jobs").update({ status: "starting", updated_at: new Date().toISOString() }).eq("id", job.id);
-    return NextResponse.json({ job: { ...job, status: "starting" }, execution: "dispatched", scenePlan, productImageUrl }, { status: 202 });
+    return NextResponse.json({ job: { ...job, status: "starting" }, execution: "dispatched", scenePlan, productImageUrl, youtubeIngestion: Boolean(youtube) }, { status: 202 });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unable to dispatch broadcast.";
     await admin.from("stream_jobs").update({ status: "error", error_message: message, updated_at: new Date().toISOString() }).eq("id", job.id);
