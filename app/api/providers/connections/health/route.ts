@@ -1,6 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
-import { probeYouTubeConnection } from "@/lib/youtube-live";
+import { probeYouTubeConnection, YouTubeConnectionError } from "@/lib/youtube-live";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -46,6 +46,14 @@ function baseHealth(row: ConnectionRow) {
   };
 }
 
+function expiryFields(expiresAt: string | null) {
+  const expiresAtMs = expiresAt ? Date.parse(expiresAt) : 0;
+  return {
+    expiresAt,
+    expiresInSeconds: expiresAtMs ? Math.floor((expiresAtMs - Date.now()) / 1000) : null,
+  };
+}
+
 export async function GET(request: Request) {
   let ctx;
   try {
@@ -66,12 +74,15 @@ export async function GET(request: Request) {
   const results = await Promise.all(rows.map(async (row) => {
     const common = baseHealth(row);
     if (row.provider !== "youtube") {
+      const expiredByTime = Boolean(row.expires_at && Date.parse(row.expires_at) <= Date.now());
       return {
         ...common,
-        health: row.status === "connected" ? "stored_connected" : row.status,
+        health: expiredByTime ? "expired" : row.status === "connected" ? "stored_connected" : row.status,
         probed: false,
-        requiresReconnect: row.status !== "connected",
-        message: "Active provider probe is not implemented for this provider yet.",
+        requiresReconnect: expiredByTime || row.status !== "connected",
+        message: expiredByTime
+          ? "Stored provider authorization has expired and must be reconnected."
+          : "Active provider probe is not implemented for this provider yet.",
       };
     }
 
@@ -79,40 +90,62 @@ export async function GET(request: Request) {
       const probe = await probeYouTubeConnection(ctx.user.id);
       return {
         ...common,
+        ...expiryFields(probe.expiresAt),
         health: "healthy",
+        storedStatus: "connected",
         probed: true,
         requiresReconnect: false,
         accountId: probe.accountId || common.accountId,
         accountName: probe.accountName || common.accountName,
+        updatedAt: probe.updatedAt || common.updatedAt,
         checkedAt: new Date().toISOString(),
       };
     } catch (probeError) {
       const message = probeError instanceof Error ? probeError.message : "YouTube connection probe failed.";
-      const requiresReconnect = /reconnect|authorization|invalid_grant|not connected/i.test(message);
-      const nextStatus = requiresReconnect ? "expired" : "error";
-      const { error: persistError } = await ctx.admin
-        .from("provider_connections")
-        .update({ status: nextStatus, updated_at: new Date().toISOString() })
-        .eq("owner_id", ctx.user.id)
-        .eq("provider", "youtube");
-      if (persistError) {
+      const structured = probeError instanceof YouTubeConnectionError ? probeError : null;
+      const requiresReconnect = structured?.requiresReconnect === true;
+      const transient = structured?.transient === true;
+
+      if (requiresReconnect) {
+        const updatedAt = new Date().toISOString();
+        const { error: persistError } = await ctx.admin
+          .from("provider_connections")
+          .update({ status: "expired", updated_at: updatedAt })
+          .eq("owner_id", ctx.user.id)
+          .eq("provider", "youtube");
+        if (persistError) {
+          return {
+            ...common,
+            health: "probe_error",
+            probed: true,
+            requiresReconnect: true,
+            message,
+            errorCode: structured?.code || null,
+            persistenceError: persistError.message,
+            checkedAt: new Date().toISOString(),
+          };
+        }
         return {
           ...common,
-          health: "probe_error",
+          storedStatus: "expired",
+          health: "expired",
           probed: true,
-          requiresReconnect,
+          requiresReconnect: true,
           message,
-          persistenceError: persistError.message,
+          errorCode: structured?.code || null,
+          updatedAt,
           checkedAt: new Date().toISOString(),
         };
       }
+
       return {
         ...common,
-        storedStatus: nextStatus,
-        health: nextStatus,
+        health: transient ? "temporarily_unavailable" : "probe_error",
         probed: true,
-        requiresReconnect,
+        requiresReconnect: false,
         message,
+        errorCode: structured?.code || null,
+        transient,
         checkedAt: new Date().toISOString(),
       };
     }
