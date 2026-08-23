@@ -16,6 +16,11 @@ type TokenSet = Record<string, unknown> & {
   error_description?: string;
 };
 
+type ChannelBody = {
+  items?: Array<{ id?: string; snippet?: { title?: string } }>;
+  error?: { message?: string };
+};
+
 export class YouTubeConnectionError extends Error {
   code: string;
   requiresReconnect: boolean;
@@ -37,6 +42,16 @@ function adminClient() {
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!url || !key) throw new Error("Supabase provider services are not configured.");
   return createClient(url, key, { auth: { persistSession: false } });
+}
+
+async function parseJsonBody<T>(response: Response): Promise<T | null> {
+  const text = await response.text();
+  if (!text) return null;
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    return null;
+  }
 }
 
 async function loadYouTubeConnection(ownerId: string) {
@@ -92,9 +107,9 @@ async function refreshYouTubeTokens(connection: StoredConnection, tokens: TokenS
     );
   }
 
-  const refreshed = await response.json() as TokenSet;
-  if (!response.ok || typeof refreshed.access_token !== "string") {
-    const code = typeof refreshed.error === "string" ? refreshed.error : `refresh_http_${response.status}`;
+  const refreshed = await parseJsonBody<TokenSet>(response);
+  if (!response.ok || typeof refreshed?.access_token !== "string") {
+    const code = typeof refreshed?.error === "string" ? refreshed.error : `refresh_http_${response.status}`;
     const requiresReconnect = code === "invalid_grant";
     throw new YouTubeConnectionError(
       requiresReconnect ? "YouTube authorization must be reconnected." : "YouTube access-token refresh failed.",
@@ -129,8 +144,18 @@ async function refreshYouTubeTokens(connection: StoredConnection, tokens: TokenS
     .select("updated_at")
     .maybeSingle();
   if (error) throw error;
+
   if (!updatedRow) {
-    throw new YouTubeConnectionError("YouTube connection changed while refreshing; the newer connection was preserved.", {
+    const winner = await loadYouTubeConnection(connection.owner_id);
+    const winnerTokens = decryptProviderTokens(winner.encrypted_tokens) as TokenSet;
+    if (typeof winnerTokens.access_token === "string") {
+      return {
+        tokens: winnerTokens,
+        expiresAt: winner.expires_at,
+        updatedAt: winner.updated_at,
+      };
+    }
+    throw new YouTubeConnectionError("YouTube connection changed while refreshing and no usable access token is available.", {
       code: "refresh_connection_changed",
       transient: true,
     });
@@ -182,11 +207,8 @@ async function fetchYouTubeChannel(accessToken: string) {
     );
   }
 
-  const body = await response.json() as {
-    items?: Array<{ id?: string; snippet?: { title?: string } }>;
-    error?: { message?: string };
-  };
-  return { response, body };
+  const body = await parseJsonBody<ChannelBody>(response);
+  return { response, body: body || {} };
 }
 
 export async function probeYouTubeConnection(ownerId: string) {
