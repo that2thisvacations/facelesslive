@@ -11,7 +11,23 @@ type TokenSet = Record<string, unknown> & {
   access_token?: string;
   refresh_token?: string;
   expires_in?: number;
+  error?: string;
+  error_description?: string;
 };
+
+export class YouTubeConnectionError extends Error {
+  code: string;
+  requiresReconnect: boolean;
+  transient: boolean;
+
+  constructor(message: string, options: { code: string; requiresReconnect?: boolean; transient?: boolean }) {
+    super(message);
+    this.name = "YouTubeConnectionError";
+    this.code = options.code;
+    this.requiresReconnect = Boolean(options.requiresReconnect);
+    this.transient = Boolean(options.transient);
+  }
+}
 
 function adminClient() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -24,7 +40,12 @@ async function refreshYouTubeTokens(connection: StoredConnection, tokens: TokenS
   const clientId = process.env.YOUTUBE_CLIENT_ID;
   const clientSecret = process.env.YOUTUBE_CLIENT_SECRET;
   const refreshToken = typeof tokens.refresh_token === "string" ? tokens.refresh_token : null;
-  if (!clientId || !clientSecret || !refreshToken) throw new Error("YouTube authorization must be reconnected.");
+  if (!clientId || !clientSecret || !refreshToken) {
+    throw new YouTubeConnectionError("YouTube authorization must be reconnected.", {
+      code: "missing_refresh_credentials",
+      requiresReconnect: true,
+    });
+  }
 
   const response = await fetch("https://oauth2.googleapis.com/token", {
     method: "POST",
@@ -33,19 +54,31 @@ async function refreshYouTubeTokens(connection: StoredConnection, tokens: TokenS
     cache: "no-store",
   });
   const refreshed = await response.json() as TokenSet;
-  if (!response.ok || typeof refreshed.access_token !== "string") throw new Error("YouTube access-token refresh failed.");
+  if (!response.ok || typeof refreshed.access_token !== "string") {
+    const code = typeof refreshed.error === "string" ? refreshed.error : `refresh_http_${response.status}`;
+    const requiresReconnect = code === "invalid_grant" || code === "invalid_client" || response.status === 401;
+    throw new YouTubeConnectionError(
+      requiresReconnect ? "YouTube authorization must be reconnected." : "YouTube access-token refresh failed.",
+      {
+        code,
+        requiresReconnect,
+        transient: response.status === 429 || response.status >= 500,
+      },
+    );
+  }
 
   const merged: TokenSet = { ...tokens, ...refreshed, refresh_token: refreshToken };
   const expiresIn = typeof refreshed.expires_in === "number" ? refreshed.expires_in : 3600;
   const expiresAt = new Date(Date.now() + expiresIn * 1000).toISOString();
+  const updatedAt = new Date().toISOString();
   const { error } = await adminClient().from("provider_connections").update({
     encrypted_tokens: encryptProviderTokens(merged),
     expires_at: expiresAt,
     status: "connected",
-    updated_at: new Date().toISOString(),
+    updated_at: updatedAt,
   }).eq("owner_id", connection.owner_id).eq("provider", "youtube");
   if (error) throw error;
-  return { tokens: merged, expiresAt };
+  return { tokens: merged, expiresAt, updatedAt };
 }
 
 export async function getYouTubeAccessToken(ownerId: string) {
@@ -56,7 +89,12 @@ export async function getYouTubeAccessToken(ownerId: string) {
     .eq("status", "connected")
     .maybeSingle();
   if (error) throw error;
-  if (!data?.encrypted_tokens) throw new Error("YouTube is not connected.");
+  if (!data?.encrypted_tokens) {
+    throw new YouTubeConnectionError("YouTube is not connected.", {
+      code: "not_connected",
+      requiresReconnect: true,
+    });
+  }
 
   const connection = data as StoredConnection;
   const tokens = decryptProviderTokens(connection.encrypted_tokens) as TokenSet;
@@ -81,13 +119,28 @@ export async function probeYouTubeConnection(ownerId: string) {
     items?: Array<{ id?: string; snippet?: { title?: string } }>;
     error?: { message?: string };
   };
-  if (!response.ok) throw new Error(body.error?.message || `YouTube health probe returned ${response.status}.`);
+  if (!response.ok) {
+    throw new YouTubeConnectionError(body.error?.message || `YouTube health probe returned ${response.status}.`, {
+      code: `probe_http_${response.status}`,
+      requiresReconnect: response.status === 401,
+      transient: response.status === 429 || response.status >= 500,
+    });
+  }
   const channel = body.items?.[0];
+  const { data: connection, error: connectionError } = await adminClient()
+    .from("provider_connections")
+    .select("expires_at,updated_at")
+    .eq("owner_id", ownerId)
+    .eq("provider", "youtube")
+    .maybeSingle();
+  if (connectionError) throw connectionError;
   return {
     ok: true as const,
     provider: "youtube" as const,
     accountId: channel?.id || null,
     accountName: channel?.snippet?.title || null,
+    expiresAt: connection?.expires_at || null,
+    updatedAt: connection?.updated_at || null,
   };
 }
 
