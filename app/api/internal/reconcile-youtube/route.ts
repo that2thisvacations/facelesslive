@@ -22,6 +22,7 @@ type WorkerJob = {
 const ACTIVE_STREAM_STATUSES = ["queued", "starting", "live"];
 const TERMINAL_YOUTUBE_STATUSES = new Set(["ended"]);
 const MAX_JOBS_PER_RUN = 20;
+const QUEUED_DISPATCH_GRACE_MS = 120_000;
 
 function authorized(request: Request) {
   const secret = process.env.CRON_SECRET;
@@ -70,7 +71,7 @@ async function reconcile() {
   const admin = createClient(url, serviceKey, { auth: { persistSession: false } });
   const { data: jobs, error } = await admin
     .from("stream_jobs")
-    .select("id,status,destination_id,ingestion_health,broadcast_destinations!inner(provider)")
+    .select("id,status,created_at,destination_id,ingestion_health,broadcast_destinations!inner(provider)")
     .in("status", ACTIVE_STREAM_STATUSES)
     .eq("broadcast_destinations.provider", "youtube")
     .order("updated_at", { ascending: true })
@@ -89,9 +90,30 @@ async function reconcile() {
     try {
       const response = await workerFetch(`/jobs/${encodeURIComponent(row.id)}`);
       if (response.status === 404) {
+        const createdAt = Date.parse(String(row.created_at || ""));
+        const withinQueuedGrace = row.status === "queued"
+          && Number.isFinite(createdAt)
+          && Date.now() - createdAt < QUEUED_DISPATCH_GRACE_MS;
+
+        if (withinQueuedGrace) {
+          const { error: pendingError } = await admin.from("stream_jobs").update({
+            ingestion_health: {
+              ...previousHealth,
+              provider: "youtube",
+              status: "dispatch_pending",
+              error: null,
+              checked_at: new Date().toISOString(),
+            },
+            updated_at: new Date().toISOString(),
+          }).eq("id", row.id).eq("status", "queued");
+          if (pendingError) throw pendingError;
+          summary.updated += 1;
+          return;
+        }
+
         summary.unavailable += 1;
         const message = "Broadcast worker no longer has this active stream job.";
-        await admin.from("stream_jobs").update({
+        const { error: orphanError } = await admin.from("stream_jobs").update({
           status: "error",
           error_message: message,
           ingestion_health: {
@@ -103,6 +125,7 @@ async function reconcile() {
           },
           updated_at: new Date().toISOString(),
         }).eq("id", row.id).in("status", ACTIVE_STREAM_STATUSES);
+        if (orphanError) throw orphanError;
         return;
       }
       if (!response.ok) throw new Error(`Worker health returned ${response.status}.`);
@@ -135,7 +158,7 @@ async function reconcile() {
       }
     } catch (jobError) {
       summary.unavailable += 1;
-      await admin.from("stream_jobs").update({
+      const { error: healthError } = await admin.from("stream_jobs").update({
         ingestion_health: {
           ...previousHealth,
           provider: "youtube",
@@ -145,6 +168,7 @@ async function reconcile() {
         },
         updated_at: new Date().toISOString(),
       }).eq("id", row.id);
+      if (healthError) console.error("youtube_health_persist_failed", row.id, healthError.message);
     }
   }));
 
