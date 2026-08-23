@@ -21,6 +21,7 @@ type WorkerJob = {
 
 const ACTIVE_STREAM_STATUSES = ["queued", "starting", "live"];
 const TERMINAL_YOUTUBE_STATUSES = new Set(["ended"]);
+const MAX_JOBS_PER_RUN = 20;
 
 function authorized(request: Request) {
   const secret = process.env.CRON_SECRET;
@@ -71,14 +72,19 @@ async function reconcile() {
     .select("id,status,destination_id,ingestion_health,broadcast_destinations!inner(provider)")
     .in("status", ACTIVE_STREAM_STATUSES)
     .eq("broadcast_destinations.provider", "youtube")
-    .limit(100);
+    .order("updated_at", { ascending: true })
+    .limit(MAX_JOBS_PER_RUN);
 
   if (error) throw error;
 
   const summary = { checked: 0, updated: 0, ended: 0, unavailable: 0 };
 
-  for (const row of jobs || []) {
+  await Promise.all((jobs || []).map(async (row) => {
     summary.checked += 1;
+    const previousHealth = row.ingestion_health && typeof row.ingestion_health === "object"
+      ? row.ingestion_health
+      : {};
+
     try {
       const response = await workerFetch(`/jobs/${encodeURIComponent(row.id)}`);
       if (response.status === 404) {
@@ -88,6 +94,7 @@ async function reconcile() {
           status: "error",
           error_message: message,
           ingestion_health: {
+            ...previousHealth,
             provider: "youtube",
             status: "worker_job_missing",
             error: message,
@@ -95,7 +102,7 @@ async function reconcile() {
           },
           updated_at: new Date().toISOString(),
         }).eq("id", row.id);
-        continue;
+        return;
       }
       if (!response.ok) throw new Error(`Worker health returned ${response.status}.`);
 
@@ -112,16 +119,24 @@ async function reconcile() {
 
       if (health && TERMINAL_YOUTUBE_STATUSES.has(health.status) && ACTIVE_STREAM_STATUSES.includes(row.status)) {
         const stopResponse = await workerFetch(`/jobs/${encodeURIComponent(row.id)}/stop`, { method: "POST" });
-        if (stopResponse.ok || stopResponse.status === 404) {
-          summary.ended += 1;
-        } else {
+        if (!stopResponse.ok && stopResponse.status !== 404) {
           throw new Error(`Worker stop returned ${stopResponse.status}.`);
         }
+
+        const { error: endedError } = await admin.from("stream_jobs").update({
+          status: "ended",
+          error_message: null,
+          ingestion_health: health,
+          updated_at: new Date().toISOString(),
+        }).eq("id", row.id);
+        if (endedError) throw endedError;
+        summary.ended += 1;
       }
     } catch (jobError) {
       summary.unavailable += 1;
       await admin.from("stream_jobs").update({
         ingestion_health: {
+          ...previousHealth,
           provider: "youtube",
           status: "health_check_error",
           error: jobError instanceof Error ? jobError.message.slice(0, 500) : "Unable to reconcile YouTube ingestion health.",
@@ -130,7 +145,7 @@ async function reconcile() {
         updated_at: new Date().toISOString(),
       }).eq("id", row.id);
     }
-  }
+  }));
 
   return summary;
 }
