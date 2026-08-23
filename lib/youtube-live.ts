@@ -369,19 +369,22 @@ export async function probeYouTubeConnection(ownerId: string): Promise<YouTubePr
     return existing.promise;
   }
 
-  let entry: YouTubeProbeInFlightEntry;
+  const entry: YouTubeProbeInFlightEntry = {
+    connectionUpdatedAt: connectionAtStart.updated_at,
+    promise: Promise.resolve(null as never),
+  };
   const promise = performYouTubeProbe(ownerId, connectionAtStart, (updatedAt) => {
     const current = youtubeProbeInFlight.get(ownerId);
-    if (current?.promise === entry.promise) current.connectionUpdatedAt = updatedAt;
+    if (current === entry) current.connectionUpdatedAt = updatedAt;
   });
-  entry = { connectionUpdatedAt: connectionAtStart.updated_at, promise };
+  entry.promise = promise;
   youtubeProbeInFlight.set(ownerId, entry);
 
   try {
     return await promise;
   } finally {
     const current = youtubeProbeInFlight.get(ownerId);
-    if (current?.promise === promise) youtubeProbeInFlight.delete(ownerId);
+    if (current === entry) youtubeProbeInFlight.delete(ownerId);
   }
 }
 
