@@ -5,6 +5,7 @@ type StoredConnection = {
   owner_id: string;
   encrypted_tokens: string;
   expires_at: string | null;
+  updated_at: string | null;
 };
 
 type TokenSet = Record<string, unknown> & {
@@ -40,7 +41,7 @@ function adminClient() {
 
 async function loadYouTubeConnection(ownerId: string) {
   const { data, error } = await adminClient().from("provider_connections")
-    .select("owner_id,encrypted_tokens,expires_at")
+    .select("owner_id,encrypted_tokens,expires_at,updated_at")
     .eq("owner_id", ownerId)
     .eq("provider", "youtube")
     .eq("status", "connected")
@@ -81,14 +82,16 @@ async function refreshYouTubeTokens(connection: StoredConnection, tokens: TokenS
       signal: AbortSignal.timeout(8000),
     });
   } catch (error) {
-    if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) {
-      throw new YouTubeConnectionError("YouTube access-token refresh timed out.", {
-        code: "refresh_timeout",
+    const timedOut = error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
+    throw new YouTubeConnectionError(
+      timedOut ? "YouTube access-token refresh timed out." : "YouTube access-token refresh could not reach the provider.",
+      {
+        code: timedOut ? "refresh_timeout" : "refresh_transport_error",
         transient: true,
-      });
-    }
-    throw error;
+      },
+    );
   }
+
   const refreshed = await response.json() as TokenSet;
   if (!response.ok || typeof refreshed.access_token !== "string") {
     const code = typeof refreshed.error === "string" ? refreshed.error : `refresh_http_${response.status}`;
@@ -107,14 +110,33 @@ async function refreshYouTubeTokens(connection: StoredConnection, tokens: TokenS
   const expiresIn = typeof refreshed.expires_in === "number" ? refreshed.expires_in : 3600;
   const expiresAt = new Date(Date.now() + expiresIn * 1000).toISOString();
   const updatedAt = new Date().toISOString();
-  const { error } = await adminClient().from("provider_connections").update({
+
+  let updateQuery = adminClient().from("provider_connections").update({
     encrypted_tokens: encryptProviderTokens(merged),
     expires_at: expiresAt,
     status: "connected",
     updated_at: updatedAt,
-  }).eq("owner_id", connection.owner_id).eq("provider", "youtube");
+  })
+    .eq("owner_id", connection.owner_id)
+    .eq("provider", "youtube")
+    .eq("status", "connected");
+
+  updateQuery = connection.updated_at
+    ? updateQuery.eq("updated_at", connection.updated_at)
+    : updateQuery.is("updated_at", null);
+
+  const { data: updatedRow, error } = await updateQuery
+    .select("updated_at")
+    .maybeSingle();
   if (error) throw error;
-  return { tokens: merged, expiresAt, updatedAt };
+  if (!updatedRow) {
+    throw new YouTubeConnectionError("YouTube connection changed while refreshing; the newer connection was preserved.", {
+      code: "refresh_connection_changed",
+      transient: true,
+    });
+  }
+
+  return { tokens: merged, expiresAt, updatedAt: updatedRow.updated_at || updatedAt };
 }
 
 async function forceRefreshYouTubeAccessToken(ownerId: string) {
@@ -150,13 +172,14 @@ async function fetchYouTubeChannel(accessToken: string) {
       signal: AbortSignal.timeout(8000),
     });
   } catch (error) {
-    if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) {
-      throw new YouTubeConnectionError("YouTube channel probe timed out.", {
-        code: "probe_timeout",
+    const timedOut = error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
+    throw new YouTubeConnectionError(
+      timedOut ? "YouTube channel probe timed out." : "YouTube channel probe could not reach the provider.",
+      {
+        code: timedOut ? "probe_timeout" : "probe_transport_error",
         transient: true,
-      });
-    }
-    throw error;
+      },
+    );
   }
 
   const body = await response.json() as {
