@@ -69,12 +69,24 @@ async function refreshYouTubeTokens(connection: StoredConnection, tokens: TokenS
     });
   }
 
-  const response = await fetch("https://oauth2.googleapis.com/token", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ client_id: clientId, client_secret: clientSecret, refresh_token: refreshToken, grant_type: "refresh_token" }),
-    cache: "no-store",
-  });
+  let response: Response;
+  try {
+    response = await fetch("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ client_id: clientId, client_secret: clientSecret, refresh_token: refreshToken, grant_type: "refresh_token" }),
+      cache: "no-store",
+      signal: AbortSignal.timeout(8000),
+    });
+  } catch (error) {
+    if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) {
+      throw new YouTubeConnectionError("YouTube access-token refresh timed out.", {
+        code: "refresh_timeout",
+        transient: true,
+      });
+    }
+    throw error;
+  }
   const refreshed = await response.json() as TokenSet;
   if (!response.ok || typeof refreshed.access_token !== "string") {
     const code = typeof refreshed.error === "string" ? refreshed.error : `refresh_http_${response.status}`;
