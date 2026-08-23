@@ -18,7 +18,10 @@ type TokenSet = Record<string, unknown> & {
 
 type ChannelBody = {
   items?: Array<{ id?: string; snippet?: { title?: string } }>;
-  error?: { message?: string };
+  error?: {
+    message?: string;
+    errors?: Array<{ reason?: string }>;
+  };
 };
 
 export class YouTubeConnectionError extends Error {
@@ -211,6 +214,11 @@ async function fetchYouTubeChannel(accessToken: string) {
   return { response, body: body || {} };
 }
 
+function isRetryableYouTube403(body: ChannelBody) {
+  const retryableReasons = new Set(["quotaExceeded", "userRateLimitExceeded", "rateLimitExceeded"]);
+  return body.error?.errors?.some((entry) => entry.reason && retryableReasons.has(entry.reason)) === true;
+}
+
 export async function probeYouTubeConnection(ownerId: string) {
   let accessToken = await getYouTubeAccessToken(ownerId);
   let { response, body } = await fetchYouTubeChannel(accessToken);
@@ -227,10 +235,11 @@ export async function probeYouTubeConnection(ownerId: string) {
 
   if (!response.ok) {
     const requiresReconnect = refreshedAfter401 && response.status === 401;
+    const transient = response.status === 429 || response.status >= 500 || (response.status === 403 && isRetryableYouTube403(body));
     throw new YouTubeConnectionError(body.error?.message || `YouTube health probe returned ${response.status}.`, {
       code: `probe_http_${response.status}`,
       requiresReconnect,
-      transient: response.status === 429 || response.status >= 500,
+      transient,
       observedUpdatedAt,
     });
   }
