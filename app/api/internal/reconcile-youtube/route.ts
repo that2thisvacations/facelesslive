@@ -6,6 +6,7 @@ export const dynamic = "force-dynamic";
 
 type WorkerJob = {
   status?: string;
+  error?: string;
   updatedAt?: string;
   youtube?: {
     status?: string;
@@ -21,6 +22,7 @@ type WorkerJob = {
 
 const ACTIVE_STREAM_STATUSES = ["queued", "starting", "live"];
 const TERMINAL_YOUTUBE_STATUSES = new Set(["ended"]);
+const TERMINAL_YOUTUBE_ERROR_STATUSES = new Set(["error", "reauthorize"]);
 const MAX_JOBS_PER_RUN = 20;
 const QUEUED_DISPATCH_GRACE_MS = 120_000;
 
@@ -73,13 +75,13 @@ async function reconcile() {
     .from("stream_jobs")
     .select("id,status,created_at,destination_id,ingestion_health,broadcast_destinations!inner(provider)")
     .in("status", ACTIVE_STREAM_STATUSES)
-    .eq("broadcast_destinations.provider", "youtube")
+    .ilike("broadcast_destinations.provider", "youtube")
     .order("updated_at", { ascending: true })
     .limit(MAX_JOBS_PER_RUN);
 
   if (error) throw error;
 
-  const summary = { checked: 0, updated: 0, ended: 0, unavailable: 0 };
+  const summary = { checked: 0, updated: 0, ended: 0, errored: 0, unavailable: 0 };
 
   await Promise.all((jobs || []).map(async (row) => {
     summary.checked += 1;
@@ -131,7 +133,8 @@ async function reconcile() {
       if (!response.ok) throw new Error(`Worker health returned ${response.status}.`);
 
       const body = await response.json() as { job?: WorkerJob };
-      const health = sanitizeHealth(body.job || {});
+      const workerJob = body.job || {};
+      const health = sanitizeHealth(workerJob);
       if (health) {
         const { error: updateError } = await admin.from("stream_jobs").update({
           ingestion_health: health,
@@ -155,6 +158,34 @@ async function reconcile() {
         }).eq("id", row.id).in("status", ACTIVE_STREAM_STATUSES);
         if (endedError) throw endedError;
         summary.ended += 1;
+        return;
+      }
+
+      const terminalIngestionFailure = workerJob.status === "error"
+        || (health && TERMINAL_YOUTUBE_ERROR_STATUSES.has(health.status));
+      if (terminalIngestionFailure && ACTIVE_STREAM_STATUSES.includes(row.status)) {
+        const message = String(
+          workerJob.error
+          || health?.error
+          || (health?.status === "reauthorize"
+            ? "YouTube authorization must be reconnected."
+            : "YouTube ingestion failed.")
+        ).slice(0, 500);
+
+        const { error: terminalError } = await admin.from("stream_jobs").update({
+          status: "error",
+          error_message: message,
+          ingestion_health: health || {
+            ...previousHealth,
+            provider: "youtube",
+            status: "error",
+            error: message,
+            checked_at: new Date().toISOString(),
+          },
+          updated_at: new Date().toISOString(),
+        }).eq("id", row.id).in("status", ACTIVE_STREAM_STATUSES);
+        if (terminalError) throw terminalError;
+        summary.errored += 1;
       }
     } catch (jobError) {
       summary.unavailable += 1;
