@@ -1,11 +1,14 @@
 import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
 import { decryptStreamCredentials } from "@/lib/stream-credentials";
+import { findActiveYouTubeBroadcast, getYouTubeAccessToken } from "@/lib/youtube-live";
 
 type Scene = { id?: string; start?: number; end?: number; title?: string; subtitle?: string; position?: string };
 type ScenePlan = { version?: number; layout?: string; scenes?: Scene[] };
 type StartRequest = { destinationId?: string; streamDraftId?: string; presenterJobId?: string; scenePlan?: ScenePlan; productImageUrl?: string };
 type RtmpCredentials = { serverUrl: string; streamKey: string };
+
+const WORKER_DISPATCH_TIMEOUT_MS = 15_000;
 
 function sanitizeScenePlan(plan?: ScenePlan): ScenePlan | null {
   if (!plan?.scenes?.length) return null;
@@ -107,6 +110,37 @@ export async function POST(request: Request) {
     }, { status: 202 });
   }
 
+  let youtube: { externalStreamId: string; liveChatId: string; accessToken: string } | null = null;
+  if (String(destination.provider || "").toLowerCase() === "youtube") {
+    try {
+      const accessToken = await getYouTubeAccessToken(authData.user.id);
+      const active = await findActiveYouTubeBroadcast(accessToken);
+      if (!active) {
+        await admin.from("stream_jobs").update({ status: "error", error_message: "No active YouTube broadcast with live chat was found.", updated_at: new Date().toISOString() }).eq("id", job.id);
+        return NextResponse.json({ error: "No active YouTube broadcast with live chat was found." }, { status: 409 });
+      }
+
+      const { data: claimed, error: claimError } = await admin.rpc("claim_live_stream_mapping", {
+        p_owner_id: authData.user.id,
+        p_platform: "youtube",
+        p_external_stream_id: active.broadcastId,
+        p_stream_job_id: job.id,
+      });
+      if (claimError) throw claimError;
+      if (claimed !== true) {
+        const message = "The active YouTube broadcast is already mapped to another active stream job.";
+        await admin.from("stream_jobs").update({ status: "error", error_message: message, updated_at: new Date().toISOString() }).eq("id", job.id);
+        return NextResponse.json({ error: message }, { status: 409 });
+      }
+
+      youtube = { externalStreamId: active.broadcastId, liveChatId: active.liveChatId, accessToken };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to prepare YouTube live ingestion.";
+      await admin.from("stream_jobs").update({ status: "error", error_message: message, updated_at: new Date().toISOString() }).eq("id", job.id);
+      return NextResponse.json({ error: message }, { status: /reconnect|authorization/i.test(message) ? 401 : 502 });
+    }
+  }
+
   try {
     const workerResponse = await fetch(workerUrl, {
       method: "POST",
@@ -121,15 +155,20 @@ export async function POST(request: Request) {
         presenter: presenter ? { jobId: presenter.id, mediaUrl: presenter.media_url } : null,
         scenePlan,
         product: productImageUrl ? { imageUrl: productImageUrl } : null,
+        youtube,
       }),
       cache: "no-store",
+      signal: AbortSignal.timeout(WORKER_DISPATCH_TIMEOUT_MS),
     });
 
     if (!workerResponse.ok) throw new Error(`Broadcast worker returned ${workerResponse.status}.`);
     await admin.from("stream_jobs").update({ status: "starting", updated_at: new Date().toISOString() }).eq("id", job.id);
-    return NextResponse.json({ job: { ...job, status: "starting" }, execution: "dispatched", scenePlan, productImageUrl }, { status: 202 });
+    return NextResponse.json({ job: { ...job, status: "starting" }, execution: "dispatched", scenePlan, productImageUrl, youtubeIngestion: Boolean(youtube) }, { status: 202 });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unable to dispatch broadcast.";
+    const timedOut = error instanceof Error && (error.name === "TimeoutError" || /timed out|timeout/i.test(error.message));
+    const message = timedOut
+      ? `Broadcast worker dispatch timed out after ${WORKER_DISPATCH_TIMEOUT_MS / 1000} seconds.`
+      : error instanceof Error ? error.message : "Unable to dispatch broadcast.";
     await admin.from("stream_jobs").update({ status: "error", error_message: message, updated_at: new Date().toISOString() }).eq("id", job.id);
     return NextResponse.json({ error: message }, { status: 502 });
   }

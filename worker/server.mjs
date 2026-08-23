@@ -3,11 +3,13 @@ import { spawn, spawnSync } from "node:child_process";
 import { createWriteStream, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { runYouTubeChatConsumer } from "./youtube-chat.mjs";
 
 const PORT = Number(process.env.PORT || 8080);
 const WORKER_TOKEN = process.env.BROADCAST_WORKER_TOKEN || "";
 const APP_URL = (process.env.FACELESSLIVE_APP_URL || "").replace(/\/$/, "");
 const CALLBACK_SECRET = process.env.BROADCAST_CALLBACK_SECRET || "";
+const LIVE_CONNECTOR_SECRET = process.env.LIVE_CONNECTOR_SECRET || "";
 const jobs = new Map();
 const PCM_RATE = 44100;
 const PCM_CHANNELS = 2;
@@ -40,11 +42,12 @@ async function report(jobId, status, error) {
   jobs.set(jobId, { ...current, status, error: error || null, updatedAt: new Date().toISOString() });
   if (!APP_URL || !CALLBACK_SECRET) return;
   try {
-    await fetch(`${APP_URL}/api/broadcast/callback`, {
+    const response = await fetch(`${APP_URL}/api/broadcast/callback`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${CALLBACK_SECRET}` },
       body: JSON.stringify({ jobId, status, error: error || undefined }),
     });
+    if (!response.ok) console.error("callback_rejected", jobId, status, response.status);
   } catch (callbackError) {
     console.error("callback_failed", jobId, callbackError);
   }
@@ -208,11 +211,88 @@ async function enqueueSpeech(jobId, payload) {
   return { queued: job.speechQueue.length + (job.speechCurrent ? 1 : 0), played: job.speechPlayed || 0, label: job.lastSpeechLabel };
 }
 
+async function startYouTubeIngestion(jobId, job, youtube) {
+  if (!youtube?.liveChatId || !youtube?.accessToken || !youtube?.externalStreamId) return;
+
+  const controller = new AbortController();
+  job.youtube = {
+    externalStreamId: youtube.externalStreamId,
+    liveChatId: youtube.liveChatId,
+    status: "starting",
+    pageToken: null,
+    updatedAt: new Date().toISOString(),
+  };
+  job.youtubeAbortController = controller;
+
+  job.youtubePromise = runYouTubeChatConsumer({
+    liveChatId: youtube.liveChatId,
+    accessToken: youtube.accessToken,
+    signal: controller.signal,
+    refreshAccessToken: async () => {
+      const response = await fetch(`${APP_URL}/api/providers/youtube/worker-token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${CALLBACK_SECRET}` },
+        body: JSON.stringify({ jobId }),
+        signal: controller.signal,
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok || !body?.accessToken) throw new Error(body?.error || `YouTube token refresh returned ${response.status}.`);
+      return body.accessToken;
+    },
+    onStatus: (status) => {
+      const current = jobs.get(jobId);
+      if (!current) return;
+      current.youtube = { ...current.youtube, ...status, updatedAt: new Date().toISOString() };
+      current.updatedAt = new Date().toISOString();
+    },
+    onMessages: async (items, nextPageToken) => {
+      const response = await fetch(`${APP_URL}/api/live/providers/youtube`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${LIVE_CONNECTOR_SECRET}` },
+        body: JSON.stringify({ streamJobId: jobId, externalStreamId: youtube.externalStreamId, items }),
+        signal: controller.signal,
+      });
+      if (!response.ok) throw new Error(`YouTube downstream delivery returned ${response.status}.`);
+      const current = jobs.get(jobId);
+      if (current?.youtube) current.youtube.pageToken = nextPageToken;
+    },
+  }).then(async (result) => {
+    const current = jobs.get(jobId);
+    if (current) {
+      current.youtube = { ...current.youtube, ...result, updatedAt: new Date().toISOString() };
+      current.updatedAt = new Date().toISOString();
+    }
+    if (result.status === "reauthorize") {
+      const message = "YouTube authorization must be reconnected.";
+      if (current) {
+        current.fatalIngestionError = message;
+        if (current.process && !current.process.killed) current.process.kill("SIGTERM");
+      }
+      await report(jobId, "error", message);
+    }
+    return result;
+  }).catch(async (error) => {
+    const message = `YouTube ingestion failed: ${error instanceof Error ? error.message : "unknown error"}`;
+    const current = jobs.get(jobId);
+    if (current) {
+      current.youtube = { ...current.youtube, status: "error", error: error instanceof Error ? error.message : String(error), updatedAt: new Date().toISOString() };
+      current.fatalIngestionError = message;
+      current.updatedAt = new Date().toISOString();
+      if (current.process && !current.process.killed) current.process.kill("SIGTERM");
+    }
+    await report(jobId, "error", message);
+    return { status: "error" };
+  });
+}
+
 async function startJob(payload) {
-  const { jobId, destination, presenter, scenePlan, product } = payload || {};
+  const { jobId, destination, presenter, scenePlan, product, youtube } = payload || {};
   if (!jobId || !destination?.serverUrl || !destination?.streamKey) throw new Error("jobId and RTMP destination credentials are required.");
   if (!presenter?.mediaUrl) throw new Error("A ready presenter mediaUrl is required for this worker.");
   if (jobs.get(jobId)?.process) throw new Error("Broadcast job is already running.");
+  if (youtube?.liveChatId && (!APP_URL || !LIVE_CONNECTOR_SECRET || !CALLBACK_SECRET)) {
+    throw new Error("YouTube ingestion requires FACELESSLIVE_APP_URL, LIVE_CONNECTOR_SECRET, and BROADCAST_CALLBACK_SECRET.");
+  }
 
   const output = buildOutputUrl(destination.serverUrl, destination.streamKey);
   const scene = buildSceneFilters(jobId, scenePlan);
@@ -262,6 +342,10 @@ async function startJob(payload) {
     speechCurrent: null,
     speechOffset: 0,
     speechPlayed: 0,
+    youtube: null,
+    youtubeAbortController: null,
+    youtubePromise: null,
+    fatalIngestionError: null,
   };
   jobs.set(jobId, job);
   startSpeechFeeder(job);
@@ -279,16 +363,27 @@ async function startJob(payload) {
   child.on("error", async (error) => { await report(jobId, "error", error.message); });
   child.on("exit", async (code, signal) => {
     const current = jobs.get(jobId) || {};
+    current.youtubeAbortController?.abort();
     if (current.overlayTimer) clearTimeout(current.overlayTimer);
     if (current.speechTimer) clearInterval(current.speechTimer);
     if (current.speechWriter && !current.speechWriter.destroyed) current.speechWriter.destroy();
     if (current.tempDir) {
       try { rmSync(current.tempDir, { recursive: true, force: true }); } catch {}
     }
-    jobs.set(jobId, { ...current, process: null, tempDir: null, liveTitleFile: null, liveSubtitleFile: null, overlayTimer: null, speechWriter: null, speechTimer: null, speechQueue: [], speechCurrent: null, exitCode: code, signal });
-    if (code === 0 || signal === "SIGTERM") await report(jobId, "ended");
+    const fatalIngestionError = current.fatalIngestionError || null;
+    jobs.set(jobId, { ...current, process: null, tempDir: null, liveTitleFile: null, liveSubtitleFile: null, overlayTimer: null, speechWriter: null, speechTimer: null, speechQueue: [], speechCurrent: null, youtubeAbortController: null, exitCode: code, signal });
+    if (fatalIngestionError) await report(jobId, "error", fatalIngestionError);
+    else if (code === 0 || signal === "SIGTERM") await report(jobId, "ended");
     else await report(jobId, "error", `FFmpeg exited with code ${code ?? "unknown"}.`);
   });
+
+  try {
+    await startYouTubeIngestion(jobId, job, youtube);
+  } catch (error) {
+    job.youtubeAbortController?.abort();
+    child.kill("SIGTERM");
+    throw error;
+  }
 }
 
 const server = createServer(async (req, res) => {
@@ -303,7 +398,7 @@ const server = createServer(async (req, res) => {
     const id = decodeURIComponent(url.pathname.slice("/jobs/".length));
     const job = jobs.get(id);
     if (!job) return json(res, 404, { error: "Job not found." });
-    const { process: _process, tempDir: _tempDir, liveTitleFile: _liveTitleFile, liveSubtitleFile: _liveSubtitleFile, overlayTimer: _overlayTimer, speechWriter: _speechWriter, speechTimer: _speechTimer, speechQueue: _speechQueue, speechCurrent: _speechCurrent, ...safe } = job;
+    const { process: _process, tempDir: _tempDir, liveTitleFile: _liveTitleFile, liveSubtitleFile: _liveSubtitleFile, overlayTimer: _overlayTimer, speechWriter: _speechWriter, speechTimer: _speechTimer, speechQueue: _speechQueue, speechCurrent: _speechCurrent, youtubeAbortController: _youtubeAbortController, youtubePromise: _youtubePromise, ...safe } = job;
     return json(res, 200, { job: { ...safe, speechQueued: (_speechQueue?.length || 0) + (_speechCurrent ? 1 : 0) } });
   }
 
@@ -312,7 +407,7 @@ const server = createServer(async (req, res) => {
     try {
       const payload = await readJson(req);
       await startJob(payload);
-      return json(res, 202, { ok: true, jobId: payload.jobId, status: "starting", scenes: normalizeScenes(payload.scenePlan).length, productImage: Boolean(validHttpsUrl(payload.product?.imageUrl)), speechMix: true });
+      return json(res, 202, { ok: true, jobId: payload.jobId, status: "starting", scenes: normalizeScenes(payload.scenePlan).length, productImage: Boolean(validHttpsUrl(payload.product?.imageUrl)), speechMix: true, youtubeIngestion: Boolean(payload.youtube?.liveChatId) });
     } catch (error) {
       return json(res, 400, { error: error instanceof Error ? error.message : "Unable to start broadcast." });
     }
@@ -348,6 +443,7 @@ const server = createServer(async (req, res) => {
     const job = jobs.get(id);
     if (!job?.process) return json(res, 404, { error: "Active job not found." });
     clearLiveOverlay(job);
+    job.youtubeAbortController?.abort();
     job.process.kill("SIGTERM");
     return json(res, 202, { ok: true, jobId: id, status: "stopping" });
   }
