@@ -86,6 +86,18 @@ export async function GET(request: Request) {
       };
     }
 
+    if (row.status !== "connected") {
+      return {
+        ...common,
+        health: row.status,
+        probed: false,
+        requiresReconnect: row.status === "expired",
+        message: row.status === "expired"
+          ? "YouTube authorization has expired and must be reconnected."
+          : "YouTube connection is not currently usable.",
+      };
+    }
+
     try {
       const probe = await probeYouTubeConnection(ctx.user.id);
       return {
