@@ -429,6 +429,7 @@ async function moveSharedProbeLock(ownerId: string, lockToken: string, updatedAt
     [PROBE_LOCK_KEY]: {
       ...lock,
       connectionUpdatedAt: updatedAt,
+      expiresAt: new Date(Date.now() + YOUTUBE_PROBE_LOCK_MS).toISOString(),
     },
   };
   let query = adminClient().from("provider_connections")
