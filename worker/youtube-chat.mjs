@@ -1,4 +1,19 @@
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+function abortableSleep(ms, signal) {
+  if (signal?.aborted) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      cleanup();
+      resolve(true);
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      cleanup();
+      resolve(false);
+    };
+    const cleanup = () => signal?.removeEventListener("abort", onAbort);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
 
 function classifyFailure(status, body) {
   const reason = body?.error?.errors?.[0]?.reason || "";
@@ -9,10 +24,13 @@ function classifyFailure(status, body) {
   return "provider_error";
 }
 
-export async function runYouTubeChatConsumer({ liveChatId, accessToken, onMessages, signal, initialPageToken = null, maxReconnects = 8 }) {
+export async function runYouTubeChatConsumer({ liveChatId, accessToken, onMessages, onStatus, signal, initialPageToken = null, maxReconnects = 8 }) {
   let pageToken = initialPageToken;
   let reconnects = 0;
   let delay = 1000;
+  let providerDelay = 5000;
+
+  onStatus?.({ status: "starting", pageToken });
 
   while (!signal?.aborted) {
     const url = new URL("https://www.googleapis.com/youtube/v3/liveChat/messages");
@@ -24,10 +42,15 @@ export async function runYouTubeChatConsumer({ liveChatId, accessToken, onMessag
     try {
       const response = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` }, signal });
       const body = await response.json();
+      providerDelay = Math.max(1000, Number(body.pollingIntervalMillis || providerDelay || 5000));
+
       if (!response.ok) {
         const kind = classifyFailure(response.status, body);
+        onStatus?.({ status: kind, pageToken, providerDelay });
         if (["ended", "disabled", "reauthorize"].includes(kind)) return { status: kind, pageToken };
-        throw new Error(body?.error?.message || kind);
+        const error = new Error(body?.error?.message || kind);
+        error.kind = kind;
+        throw error;
       }
 
       const nextPageToken = body.nextPageToken || pageToken;
@@ -37,14 +60,17 @@ export async function runYouTubeChatConsumer({ liveChatId, accessToken, onMessag
       pageToken = nextPageToken;
       reconnects = 0;
       delay = 1000;
+      onStatus?.({ status: "healthy", pageToken, providerDelay, received: Array.isArray(body.items) ? body.items.length : 0 });
 
       if (body.offlineAt) return { status: "ended", pageToken, offlineAt: body.offlineAt };
-      await sleep(Math.max(1000, Number(body.pollingIntervalMillis || 5000)));
+      if (!(await abortableSleep(providerDelay, signal))) return { status: "stopped", pageToken };
     } catch (error) {
-      if (signal?.aborted) return { status: "stopped", pageToken };
+      if (signal?.aborted || error?.name === "AbortError") return { status: "stopped", pageToken };
       reconnects += 1;
+      onStatus?.({ status: error?.kind || "retrying", pageToken, reconnects, providerDelay, error: error instanceof Error ? error.message : String(error) });
       if (reconnects > maxReconnects) throw error;
-      await sleep(delay);
+      const retryDelay = Math.max(providerDelay, delay);
+      if (!(await abortableSleep(retryDelay, signal))) return { status: "stopped", pageToken };
       delay = Math.min(delay * 2, 30000);
     }
   }
