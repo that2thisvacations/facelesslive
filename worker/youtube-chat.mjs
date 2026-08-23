@@ -24,11 +24,13 @@ function classifyFailure(status, body) {
   return "provider_error";
 }
 
-export async function runYouTubeChatConsumer({ liveChatId, accessToken, onMessages, onStatus, signal, initialPageToken = null, maxReconnects = 8 }) {
+export async function runYouTubeChatConsumer({ liveChatId, accessToken, refreshAccessToken, onMessages, onStatus, signal, initialPageToken = null, maxReconnects = 8 }) {
   let pageToken = initialPageToken;
+  let currentAccessToken = accessToken;
   let reconnects = 0;
   let delay = 1000;
   let providerDelay = 5000;
+  let authRefreshes = 0;
 
   onStatus?.({ status: "starting", pageToken });
 
@@ -40,12 +42,25 @@ export async function runYouTubeChatConsumer({ liveChatId, accessToken, onMessag
     if (pageToken) url.searchParams.set("pageToken", pageToken);
 
     try {
-      const response = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` }, signal });
+      const response = await fetch(url, { headers: { Authorization: `Bearer ${currentAccessToken}` }, signal });
       const body = await response.json();
       providerDelay = Math.max(1000, Number(body.pollingIntervalMillis || providerDelay || 5000));
 
       if (!response.ok) {
         const kind = classifyFailure(response.status, body);
+        if (kind === "reauthorize" && refreshAccessToken && authRefreshes < 2) {
+          authRefreshes += 1;
+          onStatus?.({ status: "refreshing_token", pageToken, providerDelay, authRefreshes });
+          try {
+            const refreshed = await refreshAccessToken();
+            if (!refreshed) throw new Error("YouTube token refresh returned no access token.");
+            currentAccessToken = refreshed;
+            continue;
+          } catch (refreshError) {
+            onStatus?.({ status: "reauthorize", pageToken, providerDelay, error: refreshError instanceof Error ? refreshError.message : String(refreshError) });
+            return { status: "reauthorize", pageToken };
+          }
+        }
         onStatus?.({ status: kind, pageToken, providerDelay });
         if (["ended", "disabled", "reauthorize"].includes(kind)) return { status: kind, pageToken };
         const error = new Error(body?.error?.message || kind);
@@ -53,6 +68,7 @@ export async function runYouTubeChatConsumer({ liveChatId, accessToken, onMessag
         throw error;
       }
 
+      authRefreshes = 0;
       const nextPageToken = body.nextPageToken || pageToken;
       if (Array.isArray(body.items) && body.items.length) await onMessages(body.items, nextPageToken);
 
