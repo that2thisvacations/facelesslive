@@ -107,12 +107,28 @@ export async function GET(request: Request) {
       const transient = structured?.transient === true;
 
       if (requiresReconnect) {
+        if (!row.updated_at) {
+          return {
+            ...common,
+            health: "probe_error",
+            probed: true,
+            requiresReconnect: false,
+            message: "Connection changed while the health probe was running; terminal state was not persisted.",
+            errorCode: structured?.code || null,
+            checkedAt: new Date().toISOString(),
+          };
+        }
+
         const updatedAt = new Date().toISOString();
-        const { error: persistError } = await ctx.admin
+        const { data: expiredRow, error: persistError } = await ctx.admin
           .from("provider_connections")
           .update({ status: "expired", updated_at: updatedAt })
           .eq("owner_id", ctx.user.id)
-          .eq("provider", "youtube");
+          .eq("provider", "youtube")
+          .eq("status", "connected")
+          .eq("updated_at", row.updated_at)
+          .select("updated_at")
+          .maybeSingle();
         if (persistError) {
           return {
             ...common,
@@ -122,6 +138,17 @@ export async function GET(request: Request) {
             message,
             errorCode: structured?.code || null,
             persistenceError: persistError.message,
+            checkedAt: new Date().toISOString(),
+          };
+        }
+        if (!expiredRow) {
+          return {
+            ...common,
+            health: "connection_changed",
+            probed: true,
+            requiresReconnect: false,
+            message: "Connection changed while the health probe was running; the newer connection was preserved.",
+            errorCode: structured?.code || null,
             checkedAt: new Date().toISOString(),
           };
         }
