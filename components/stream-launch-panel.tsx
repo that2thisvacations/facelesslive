@@ -8,6 +8,16 @@ import { getSupabaseBrowser } from "@/lib/supabase-browser";
 type Destination = { id: string; label: string; provider: string; status: string };
 type Scene = { id: string; start: number; end: number; title: string; subtitle: string; position: string };
 type ScenePlan = { version: number; layout: string; scenes: Scene[] };
+type IngestionHealth = {
+  state?: string;
+  status?: string | null;
+  pollingIntervalMillis?: number | null;
+  reconnects?: number;
+  authRefreshes?: number;
+  lastBatchSize?: number | null;
+  error?: string | null;
+  stale?: boolean | null;
+};
 type Props = { user: User | null; script: string; productName: string; productImageUrl?: string; hostName: string; layout: string };
 const VOICES = ["alloy", "ash", "coral", "echo", "nova", "onyx", "sage", "shimmer"];
 const ACTIVE_PRESENTER = new Set(["queued", "generating"]);
@@ -23,6 +33,7 @@ export function StreamLaunchPanel({ user, script, productName, productImageUrl, 
   const [presenterStatus, setPresenterStatus] = useState("not-created");
   const [broadcastJobId, setBroadcastJobId] = useState("");
   const [broadcastStatus, setBroadcastStatus] = useState("not-started");
+  const [ingestionHealth, setIngestionHealth] = useState<IngestionHealth>({ state: "not-checked", status: null });
   const [scenePlan, setScenePlan] = useState<ScenePlan | null>(null);
   const [offerText, setOfferText] = useState("Featured live offer");
   const [cta, setCta] = useState("Tap the product card to shop now");
@@ -148,6 +159,7 @@ export function StreamLaunchPanel({ user, script, productName, productImageUrl, 
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || "Unable to create broadcast job.");
       setBroadcastJobId(result.job?.id || ""); setBroadcastStatus(result.job?.status || "ready");
+      setIngestionHealth({ state: result.youtubeIngestion ? "starting" : "not_applicable", status: result.youtubeIngestion ? "starting" : null });
       setMessage(result.message || `Broadcast job created with ${scenePlan.scenes.length} scenes${productImageUrl ? " and product image" : ""}: ${result.job?.status || "ready"}.`);
     } catch (error) { setMessage(error instanceof Error ? error.message : "Unable to create broadcast job."); }
     finally { setLaunching(false); }
@@ -156,13 +168,20 @@ export function StreamLaunchPanel({ user, script, productName, productImageUrl, 
   async function refreshBroadcastStatus() {
     if (!broadcastJobId) return;
     try {
-      const { supabase } = await getToken();
-      const { data, error } = await supabase.from("stream_jobs").select("status,error_message,updated_at").eq("id", broadcastJobId).single();
-      if (error) throw error;
-      setBroadcastStatus(data.status);
-      if (data.status === "live") setMessage("Stream is LIVE with timed scenes and real-time response overlays ready.");
-      if (data.status === "ended") setMessage("Broadcast ended.");
-      if (data.status === "error") setMessage(data.error_message || "Broadcast worker reported an error.");
+      const { token } = await getToken();
+      const response = await fetch(`/api/broadcast/health?id=${encodeURIComponent(broadcastJobId)}`, { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "Unable to refresh stream health.");
+      const status = result.job?.status || broadcastStatus;
+      const ingestion = (result.ingestion || { state: "unknown", status: null }) as IngestionHealth;
+      setBroadcastStatus(status);
+      setIngestionHealth(ingestion);
+      if (status === "live" && ingestion.state === "healthy") setMessage("Stream is LIVE and YouTube chat ingestion is healthy.");
+      else if (status === "live" && ingestion.state === "degraded") setMessage("Stream is LIVE; YouTube chat ingestion is retrying or provider-limited.");
+      else if (ingestion.state === "reauthorization_required") setMessage("YouTube chat ingestion requires account reauthorization.");
+      else if (status === "live") setMessage("Stream is LIVE with timed scenes and real-time response overlays ready.");
+      else if (status === "ended") setMessage("Broadcast ended.");
+      else if (status === "error") setMessage(result.job?.errorMessage || ingestion.error || "Broadcast worker reported an error.");
     } catch (error) { setMessage(error instanceof Error ? error.message : "Unable to refresh stream health."); }
   }
 
@@ -193,18 +212,18 @@ export function StreamLaunchPanel({ user, script, productName, productImageUrl, 
       const response = await fetch("/api/broadcast/stop", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify({ jobId: broadcastJobId }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || "Unable to stop broadcast.");
-      setBroadcastStatus("ended"); setMessage("Broadcast stop requested.");
+      setBroadcastStatus("ended"); setIngestionHealth((current) => ({ ...current, state: "stopped", status: "stopped" })); setMessage("Broadcast stop requested.");
     } catch (error) { setMessage(error instanceof Error ? error.message : "Unable to stop broadcast."); }
     finally { setStopping(false); }
   }
 
   return <div className="launchStudio">
-    <div className="presenterPackage"><div><span>AI PRESENTER PACKAGE</span><strong>{hostName}</strong><small>{productName} · {layout}{productImageUrl ? " · Product image ready" : ""}</small></div><div className="packageStatus">Presenter: {presenterStatus} · Scenes: {scenePlan?.scenes.length || 0} · Stream: {broadcastStatus}</div></div>
+    <div className="presenterPackage"><div><span>AI PRESENTER PACKAGE</span><strong>{hostName}</strong><small>{productName} · {layout}{productImageUrl ? " · Product image ready" : ""}</small></div><div className="packageStatus">Presenter: {presenterStatus} · Scenes: {scenePlan?.scenes.length || 0} · Stream: {broadcastStatus} · Chat: {ingestionHealth.state || "unknown"}</div></div>
     <div className="launchControlGrid">
       <div className="integrationCard launchControlCard"><div className="integrationHeader"><Mic2 size={20}/><div><strong>AI Voice Preview</strong><span>Hear the selected presenter script before the stream.</span></div></div><div className="formStack"><select value={voice} onChange={(e) => setVoice(e.target.value)}>{VOICES.map((item) => <option key={item}>{item}</option>)}</select><button className="ghostButton" onClick={previewVoice} disabled={generatingVoice || !script.trim()}>{generatingVoice ? <LoaderCircle className="spin" size={17}/> : <Play size={17}/>} {generatingVoice ? "Generating..." : "Generate Voice Preview"}</button>{audioUrl && <audio className="voicePlayer" controls src={audioUrl}/>}</div></div>
       <div className="integrationCard launchControlCard"><div className="integrationHeader"><Video size={20}/><div><strong>AI Presenter Video</strong><span>Generate the avatar video and monitor asynchronous provider status.</span></div></div><div className="formStack"><button className="ghostButton" onClick={generatePresenter} disabled={generatingPresenter || !user || !script.trim()}>{generatingPresenter ? <LoaderCircle className="spin" size={17}/> : <Video size={17}/>} {generatingPresenter ? "Creating Presenter..." : "Generate AI Presenter"}</button><button className="ghostButton" onClick={refreshPresenterStatus} disabled={!presenterJobId || generatingPresenter}><RefreshCw size={16}/> Refresh Presenter Status</button><small className="helperText">Status: {presenterStatus}</small>{presenterMediaUrl && <video className="voicePlayer" controls src={presenterMediaUrl}/>}</div></div>
       <div className="integrationCard launchControlCard sceneCard"><div className="integrationHeader"><Layers size={20}/><div><strong>Commerce Scene Orchestration</strong><span>Sequence product, offer, and CTA overlays across the presenter video.</span></div></div><div className="formStack"><input value={offerText} onChange={(e) => { setOfferText(e.target.value); setScenePlan(null); }} placeholder="Featured offer"/><input value={cta} onChange={(e) => { setCta(e.target.value); setScenePlan(null); }} placeholder="Call to action"/><button className="ghostButton" onClick={generateScenePlan} disabled={generatingScenes}>{generatingScenes ? <LoaderCircle className="spin" size={17}/> : <Layers size={17}/>} {generatingScenes ? "Building Scenes..." : "Build Scene Plan"}</button>{scenePlan && <div className="sceneTimeline">{scenePlan.scenes.map((scene) => <div className="sceneChip" key={scene.id}><strong>{scene.title}</strong><span>{scene.start}s–{scene.end}s</span></div>)}</div>}</div></div>
-      <div className="integrationCard launchControlCard"><div className="integrationHeader"><Radio size={20}/><div><strong>Broadcast & Stream Health</strong><span>Launch RTMP with the presenter, product image, and timed commerce overlays.</span></div></div><div className="formStack"><div className="destinationRow"><select value={destinationId} onChange={(e) => setDestinationId(e.target.value)} disabled={!destinations.length}>{!destinations.length && <option value="">No connected destinations</option>}{destinations.map((item) => <option key={item.id} value={item.id}>{item.label} · {item.provider}</option>)}</select><button className="ghostButton compact" onClick={loadDestinations} disabled={loadingDestinations || !user}>{loadingDestinations ? <LoaderCircle className="spin" size={16}/> : <RefreshCw size={16}/>}</button></div><button className="primaryButton full" onClick={launchBroadcast} disabled={launching || !user || !selectedDestination || presenterStatus !== "ready" || !scenePlan || ACTIVE_STREAM.has(broadcastStatus)}>{launching ? <LoaderCircle className="spin" size={18}/> : <Radio size={18}/>} {launching ? "Creating Broadcast Job..." : "Start Broadcast"}</button>{broadcastJobId && <button className="ghostButton full" onClick={refreshBroadcastStatus}><RefreshCw size={16}/> Refresh Stream Health</button>}{broadcastJobId && ACTIVE_STREAM.has(broadcastStatus) && <button className="ghostButton full" onClick={stopBroadcast} disabled={stopping}>{stopping ? <LoaderCircle className="spin" size={16}/> : <Square size={16}/>} {stopping ? "Stopping..." : "Stop Broadcast"}</button>}<small className="helperText">Stream status: {broadcastStatus}</small></div></div>
+      <div className="integrationCard launchControlCard"><div className="integrationHeader"><Radio size={20}/><div><strong>Broadcast & Stream Health</strong><span>Launch RTMP and monitor the broadcast and YouTube chat ingestion independently.</span></div></div><div className="formStack"><div className="destinationRow"><select value={destinationId} onChange={(e) => setDestinationId(e.target.value)} disabled={!destinations.length}>{!destinations.length && <option value="">No connected destinations</option>}{destinations.map((item) => <option key={item.id} value={item.id}>{item.label} · {item.provider}</option>)}</select><button className="ghostButton compact" onClick={loadDestinations} disabled={loadingDestinations || !user}>{loadingDestinations ? <LoaderCircle className="spin" size={16}/> : <RefreshCw size={16}/>}</button></div><button className="primaryButton full" onClick={launchBroadcast} disabled={launching || !user || !selectedDestination || presenterStatus !== "ready" || !scenePlan || ACTIVE_STREAM.has(broadcastStatus)}>{launching ? <LoaderCircle className="spin" size={18}/> : <Radio size={18}/>} {launching ? "Creating Broadcast Job..." : "Start Broadcast"}</button>{broadcastJobId && <button className="ghostButton full" onClick={refreshBroadcastStatus}><RefreshCw size={16}/> Refresh Stream Health</button>}{broadcastJobId && ACTIVE_STREAM.has(broadcastStatus) && <button className="ghostButton full" onClick={stopBroadcast} disabled={stopping}>{stopping ? <LoaderCircle className="spin" size={16}/> : <Square size={16}/>} {stopping ? "Stopping..." : "Stop Broadcast"}</button>}<small className="helperText">Stream: {broadcastStatus} · YouTube chat: {ingestionHealth.state || "unknown"}{ingestionHealth.stale ? " · stale" : ""}{typeof ingestionHealth.reconnects === "number" && ingestionHealth.reconnects > 0 ? ` · retries ${ingestionHealth.reconnects}` : ""}</small></div></div>
       <div className="integrationCard launchControlCard liveEventCard"><div className="integrationHeader"><MessageCircle size={20}/><div><strong>Live Commerce Response Queue</strong><span>Inject a viewer question, generate a guarded AI answer, and push it to the live overlay.</span></div></div><div className="formStack"><div className="liveEventGrid"><input value={viewerName} onChange={(e) => setViewerName(e.target.value)} placeholder="Viewer name (optional)"/><select value={eventType} onChange={(e) => setEventType(e.target.value as typeof eventType)}><option value="question">Question</option><option value="comment">Comment</option><option value="reaction">Reaction</option></select></div><textarea value={liveMessage} onChange={(e) => setLiveMessage(e.target.value)} placeholder="What did the viewer ask or say?"/><button className="primaryButton full" onClick={sendLiveEvent} disabled={sendingEvent || !liveEventEnabled || !liveMessage.trim()}>{sendingEvent ? <LoaderCircle className="spin" size={17}/> : <Send size={17}/>} {sendingEvent ? "Generating Response..." : "Send AI Live Response"}</button>{lastAiResponse && <div className="aiResponsePreview"><span>AI RESPONSE</span><p>{lastAiResponse}</p></div>}<small className="helperText">Manual input and connected platform adapters feed the same live queue.</small></div></div>
     </div>
     <p className="launchStatus">{message || "Preview the voice, generate the presenter, build the scene plan, confirm the destination, then launch the broadcast."}</p>
