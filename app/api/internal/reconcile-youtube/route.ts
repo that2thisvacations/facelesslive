@@ -83,11 +83,14 @@ async function reconcile() {
       const response = await workerFetch(`/jobs/${encodeURIComponent(row.id)}`);
       if (response.status === 404) {
         summary.unavailable += 1;
+        const message = "Broadcast worker no longer has this active stream job.";
         await admin.from("stream_jobs").update({
+          status: "error",
+          error_message: message,
           ingestion_health: {
             provider: "youtube",
             status: "worker_job_missing",
-            error: "Broadcast worker no longer has this active stream job.",
+            error: message,
             checked_at: new Date().toISOString(),
           },
           updated_at: new Date().toISOString(),
