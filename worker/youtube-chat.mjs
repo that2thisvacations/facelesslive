@@ -24,6 +24,11 @@ function classifyFailure(status, body) {
   return "provider_error";
 }
 
+function isAuthorizationError(error) {
+  const message = error instanceof Error ? error.message : String(error || "");
+  return /reconnect|reauthoriz|authorization/i.test(message);
+}
+
 export async function runYouTubeChatConsumer({ liveChatId, accessToken, refreshAccessToken, onMessages, onStatus, signal, initialPageToken = null, maxReconnects = 8 }) {
   let pageToken = initialPageToken;
   let currentAccessToken = accessToken;
@@ -57,8 +62,14 @@ export async function runYouTubeChatConsumer({ liveChatId, accessToken, refreshA
             currentAccessToken = refreshed;
             continue;
           } catch (refreshError) {
-            onStatus?.({ status: "reauthorize", pageToken, providerDelay, error: refreshError instanceof Error ? refreshError.message : String(refreshError) });
-            return { status: "reauthorize", pageToken };
+            if (signal?.aborted || refreshError?.name === "AbortError") return { status: "stopped", pageToken };
+            if (isAuthorizationError(refreshError)) {
+              onStatus?.({ status: "reauthorize", pageToken, providerDelay, error: refreshError instanceof Error ? refreshError.message : String(refreshError) });
+              return { status: "reauthorize", pageToken };
+            }
+            const retryable = refreshError instanceof Error ? refreshError : new Error(String(refreshError));
+            retryable.kind = "token_refresh_error";
+            throw retryable;
           }
         }
         onStatus?.({ status: kind, pageToken, providerDelay });
