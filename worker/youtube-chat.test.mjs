@@ -87,3 +87,59 @@ test("refreshes an expired access token without advancing the checkpoint", async
     globalThis.fetch = originalFetch;
   }
 });
+
+test("retries a transient token-refresh failure instead of requiring reauthorization", async () => {
+  const originalFetch = globalThis.fetch;
+  let providerCalls = 0;
+  globalThis.fetch = async () => {
+    providerCalls += 1;
+    if (providerCalls <= 2) return response({ error: { message: "expired" } }, 401);
+    return response({ items: [], nextPageToken: "next-after-retry", pollingIntervalMillis: 1, offlineAt: "2026-08-23T00:00:00Z" });
+  };
+  try {
+    let refreshes = 0;
+    const statuses = [];
+    const result = await runYouTubeChatConsumer({
+      liveChatId: "chat",
+      accessToken: "old-token",
+      maxReconnects: 2,
+      refreshAccessToken: async () => {
+        refreshes += 1;
+        if (refreshes === 1) throw new Error("temporary token service outage");
+        return "new-token";
+      },
+      onStatus: (status) => statuses.push(status.status),
+      onMessages: async () => {},
+    });
+    assert.equal(result.status, "ended");
+    assert.equal(refreshes, 2);
+    assert.ok(statuses.includes("token_refresh_error"));
+    assert.ok(!statuses.includes("reauthorize"));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("abort during token refresh returns stopped", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => response({ error: { message: "expired" } }, 401);
+  try {
+    const controller = new AbortController();
+    const pending = runYouTubeChatConsumer({
+      liveChatId: "chat",
+      accessToken: "old-token",
+      signal: controller.signal,
+      refreshAccessToken: async () => {
+        controller.abort();
+        const error = new Error("aborted");
+        error.name = "AbortError";
+        throw error;
+      },
+      onMessages: async () => {},
+    });
+    const result = await pending;
+    assert.equal(result.status, "stopped");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
