@@ -150,15 +150,19 @@ async function fetchYouTubeChannel(accessToken: string) {
 export async function probeYouTubeConnection(ownerId: string) {
   let accessToken = await getYouTubeAccessToken(ownerId);
   let { response, body } = await fetchYouTubeChannel(accessToken);
+  let refreshedAfter401 = false;
 
   if (response.status === 401) {
     accessToken = await forceRefreshYouTubeAccessToken(ownerId);
+    refreshedAfter401 = true;
     ({ response, body } = await fetchYouTubeChannel(accessToken));
   }
 
   if (!response.ok) {
+    const requiresReconnect = refreshedAfter401 && response.status === 401;
     throw new YouTubeConnectionError(body.error?.message || `YouTube health probe returned ${response.status}.`, {
       code: `probe_http_${response.status}`,
+      requiresReconnect,
       transient: response.status === 429 || response.status >= 500,
     });
   }
