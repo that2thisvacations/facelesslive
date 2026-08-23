@@ -144,16 +144,27 @@ async function reconcile() {
         summary.updated += 1;
       }
 
-      if (health && TERMINAL_YOUTUBE_STATUSES.has(health.status) && ACTIVE_STREAM_STATUSES.includes(row.status)) {
-        const stopResponse = await workerFetch(`/jobs/${encodeURIComponent(row.id)}/stop`, { method: "POST" });
-        if (!stopResponse.ok && stopResponse.status !== 404) {
-          throw new Error(`Worker stop returned ${stopResponse.status}.`);
+      const terminalEnded = workerJob.status === "ended"
+        || (health && TERMINAL_YOUTUBE_STATUSES.has(health.status));
+      if (terminalEnded && ACTIVE_STREAM_STATUSES.includes(row.status)) {
+        if (workerJob.status !== "ended") {
+          const stopResponse = await workerFetch(`/jobs/${encodeURIComponent(row.id)}/stop`, { method: "POST" });
+          if (!stopResponse.ok && stopResponse.status !== 404) {
+            throw new Error(`Worker stop returned ${stopResponse.status}.`);
+          }
         }
 
+        const endedHealth = health || {
+          ...previousHealth,
+          provider: "youtube",
+          status: "ended",
+          error: null,
+          checked_at: new Date().toISOString(),
+        };
         const { error: endedError } = await admin.from("stream_jobs").update({
           status: "ended",
           error_message: null,
-          ingestion_health: health,
+          ingestion_health: endedHealth,
           updated_at: new Date().toISOString(),
         }).eq("id", row.id).in("status", ACTIVE_STREAM_STATUSES);
         if (endedError) throw endedError;
