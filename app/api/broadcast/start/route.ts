@@ -8,6 +8,8 @@ type ScenePlan = { version?: number; layout?: string; scenes?: Scene[] };
 type StartRequest = { destinationId?: string; streamDraftId?: string; presenterJobId?: string; scenePlan?: ScenePlan; productImageUrl?: string };
 type RtmpCredentials = { serverUrl: string; streamKey: string };
 
+const WORKER_DISPATCH_TIMEOUT_MS = 15_000;
+
 function sanitizeScenePlan(plan?: ScenePlan): ScenePlan | null {
   if (!plan?.scenes?.length) return null;
   const scenes = plan.scenes.slice(0, 8).map((scene, index) => ({
@@ -156,13 +158,17 @@ export async function POST(request: Request) {
         youtube,
       }),
       cache: "no-store",
+      signal: AbortSignal.timeout(WORKER_DISPATCH_TIMEOUT_MS),
     });
 
     if (!workerResponse.ok) throw new Error(`Broadcast worker returned ${workerResponse.status}.`);
     await admin.from("stream_jobs").update({ status: "starting", updated_at: new Date().toISOString() }).eq("id", job.id);
     return NextResponse.json({ job: { ...job, status: "starting" }, execution: "dispatched", scenePlan, productImageUrl, youtubeIngestion: Boolean(youtube) }, { status: 202 });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unable to dispatch broadcast.";
+    const timedOut = error instanceof Error && (error.name === "TimeoutError" || /timed out|timeout/i.test(error.message));
+    const message = timedOut
+      ? `Broadcast worker dispatch timed out after ${WORKER_DISPATCH_TIMEOUT_MS / 1000} seconds.`
+      : error instanceof Error ? error.message : "Unable to dispatch broadcast.";
     await admin.from("stream_jobs").update({ status: "error", error_message: message, updated_at: new Date().toISOString() }).eq("id", job.id);
     return NextResponse.json({ error: message }, { status: 502 });
   }
