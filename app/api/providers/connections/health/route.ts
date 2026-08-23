@@ -119,7 +119,8 @@ export async function GET(request: Request) {
       const transient = structured?.transient === true;
 
       if (requiresReconnect) {
-        if (!row.updated_at) {
+        const expectedUpdatedAt = structured?.observedUpdatedAt || row.updated_at;
+        if (!expectedUpdatedAt) {
           return {
             ...common,
             health: "probe_error",
@@ -138,7 +139,7 @@ export async function GET(request: Request) {
           .eq("owner_id", ctx.user.id)
           .eq("provider", "youtube")
           .eq("status", "connected")
-          .eq("updated_at", row.updated_at)
+          .eq("updated_at", expectedUpdatedAt)
           .select("updated_at")
           .maybeSingle();
         if (persistError) {
