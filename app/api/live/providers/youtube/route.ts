@@ -45,6 +45,8 @@ export async function POST(request: Request) {
   const origin = new URL(request.url).origin;
   let accepted = 0;
   let ignored = 0;
+  let failed = 0;
+  const failures: Array<{ id?: string; status: number }> = [];
 
   for (const item of body.items || []) {
     const message = item.snippet?.displayMessage?.trim();
@@ -62,8 +64,15 @@ export async function POST(request: Request) {
       }),
       cache: "no-store",
     });
-    if (response.ok) accepted += 1; else ignored += 1;
+    if (response.ok) accepted += 1;
+    else {
+      failed += 1;
+      failures.push({ id: item.id, status: response.status });
+    }
   }
 
-  return NextResponse.json({ ok: true, streamJobId, accepted, ignored });
+  if (failed > 0) {
+    return NextResponse.json({ ok: false, streamJobId, accepted, ignored, failed, failures }, { status: 502 });
+  }
+  return NextResponse.json({ ok: true, streamJobId, accepted, ignored, failed: 0 });
 }
