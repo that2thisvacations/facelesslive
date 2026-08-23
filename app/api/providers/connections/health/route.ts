@@ -111,13 +111,14 @@ export async function GET(request: Request) {
         accountId: probe.accountId || common.accountId,
         accountName: probe.accountName || common.accountName,
         updatedAt: probe.updatedAt || common.updatedAt,
-        checkedAt: new Date().toISOString(),
+        checkedAt: probe.checkedAt,
       };
     } catch (probeError) {
       const message = probeError instanceof Error ? probeError.message : "YouTube connection probe failed.";
       const structured = probeError instanceof YouTubeConnectionError ? probeError : null;
       const requiresReconnect = structured?.requiresReconnect === true;
       const transient = structured?.transient === true;
+      const checkedAt = structured?.checkedAt || new Date().toISOString();
 
       if (requiresReconnect) {
         const expectedUpdatedAt = structured?.observedUpdatedAt || row.updated_at;
@@ -129,7 +130,7 @@ export async function GET(request: Request) {
             requiresReconnect: false,
             message: "Connection changed while the health probe was running; terminal state was not persisted.",
             errorCode: structured?.code || null,
-            checkedAt: new Date().toISOString(),
+            checkedAt,
           };
         }
 
@@ -152,7 +153,7 @@ export async function GET(request: Request) {
             message,
             errorCode: structured?.code || null,
             persistenceError: persistError.message,
-            checkedAt: new Date().toISOString(),
+            checkedAt,
           };
         }
         if (!expiredRow) {
@@ -163,7 +164,7 @@ export async function GET(request: Request) {
             requiresReconnect: false,
             message: "Connection changed while the health probe was running; the newer connection was preserved.",
             errorCode: structured?.code || null,
-            checkedAt: new Date().toISOString(),
+            checkedAt,
           };
         }
         return {
@@ -175,7 +176,7 @@ export async function GET(request: Request) {
           message,
           errorCode: structured?.code || null,
           updatedAt,
-          checkedAt: new Date().toISOString(),
+          checkedAt,
         };
       }
 
@@ -187,7 +188,7 @@ export async function GET(request: Request) {
         message,
         errorCode: structured?.code || null,
         transient,
-        checkedAt: new Date().toISOString(),
+        checkedAt,
       };
     }
   }));
