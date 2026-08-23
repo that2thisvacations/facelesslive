@@ -87,13 +87,14 @@ export async function GET(request: Request) {
     }
 
     if (row.status !== "connected") {
+      const requiresReconnect = row.status === "expired" || row.status === "error";
       return {
         ...common,
         health: row.status,
         probed: false,
-        requiresReconnect: row.status === "expired",
-        message: row.status === "expired"
-          ? "YouTube authorization has expired and must be reconnected."
+        requiresReconnect,
+        message: requiresReconnect
+          ? "YouTube connection requires reconnection."
           : "YouTube connection is not currently usable.",
       };
     }
