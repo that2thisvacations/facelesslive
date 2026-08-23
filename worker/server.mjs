@@ -233,6 +233,7 @@ async function startYouTubeIngestion(jobId, job, youtube) {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${CALLBACK_SECRET}` },
         body: JSON.stringify({ jobId }),
+        signal: controller.signal,
       });
       const body = await response.json().catch(() => ({}));
       if (!response.ok || !body?.accessToken) throw new Error(body?.error || `YouTube token refresh returned ${response.status}.`);
@@ -249,6 +250,7 @@ async function startYouTubeIngestion(jobId, job, youtube) {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${LIVE_CONNECTOR_SECRET}` },
         body: JSON.stringify({ streamJobId: jobId, externalStreamId: youtube.externalStreamId, items }),
+        signal: controller.signal,
       });
       if (!response.ok) throw new Error(`YouTube downstream delivery returned ${response.status}.`);
       const current = jobs.get(jobId);
@@ -260,15 +262,25 @@ async function startYouTubeIngestion(jobId, job, youtube) {
       current.youtube = { ...current.youtube, ...result, updatedAt: new Date().toISOString() };
       current.updatedAt = new Date().toISOString();
     }
-    if (result.status === "reauthorize") await report(jobId, "error", "YouTube authorization must be reconnected.");
+    if (result.status === "reauthorize") {
+      const message = "YouTube authorization must be reconnected.";
+      if (current) {
+        current.fatalIngestionError = message;
+        if (current.process && !current.process.killed) current.process.kill("SIGTERM");
+      }
+      await report(jobId, "error", message);
+    }
     return result;
   }).catch(async (error) => {
+    const message = `YouTube ingestion failed: ${error instanceof Error ? error.message : "unknown error"}`;
     const current = jobs.get(jobId);
     if (current) {
       current.youtube = { ...current.youtube, status: "error", error: error instanceof Error ? error.message : String(error), updatedAt: new Date().toISOString() };
+      current.fatalIngestionError = message;
       current.updatedAt = new Date().toISOString();
+      if (current.process && !current.process.killed) current.process.kill("SIGTERM");
     }
-    await report(jobId, "error", `YouTube ingestion failed: ${error instanceof Error ? error.message : "unknown error"}`);
+    await report(jobId, "error", message);
     return { status: "error" };
   });
 }
@@ -333,6 +345,7 @@ async function startJob(payload) {
     youtube: null,
     youtubeAbortController: null,
     youtubePromise: null,
+    fatalIngestionError: null,
   };
   jobs.set(jobId, job);
   startSpeechFeeder(job);
@@ -357,8 +370,10 @@ async function startJob(payload) {
     if (current.tempDir) {
       try { rmSync(current.tempDir, { recursive: true, force: true }); } catch {}
     }
+    const fatalIngestionError = current.fatalIngestionError || null;
     jobs.set(jobId, { ...current, process: null, tempDir: null, liveTitleFile: null, liveSubtitleFile: null, overlayTimer: null, speechWriter: null, speechTimer: null, speechQueue: [], speechCurrent: null, youtubeAbortController: null, exitCode: code, signal });
-    if (code === 0 || signal === "SIGTERM") await report(jobId, "ended");
+    if (fatalIngestionError) await report(jobId, "error", fatalIngestionError);
+    else if (code === 0 || signal === "SIGTERM") await report(jobId, "ended");
     else await report(jobId, "error", `FFmpeg exited with code ${code ?? "unknown"}.`);
   });
 
