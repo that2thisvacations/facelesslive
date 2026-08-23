@@ -118,36 +118,17 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: "No active YouTube broadcast with live chat was found." }, { status: 409 });
       }
 
-      const { data: mapping, error: mappingError } = await admin.from("live_stream_mappings")
-        .select("stream_job_id")
-        .eq("owner_id", authData.user.id)
-        .eq("platform", "youtube")
-        .eq("external_stream_id", active.broadcastId)
-        .maybeSingle();
-      if (mappingError) throw mappingError;
-
-      if (mapping?.stream_job_id && mapping.stream_job_id !== job.id) {
-        const { data: mappedJob, error: mappedJobError } = await admin.from("stream_jobs")
-          .select("id,status")
-          .eq("id", mapping.stream_job_id)
-          .eq("owner_id", authData.user.id)
-          .maybeSingle();
-        if (mappedJobError) throw mappedJobError;
-        if (mappedJob && ["queued", "starting", "live"].includes(mappedJob.status)) {
-          await admin.from("stream_jobs").update({ status: "error", error_message: "The active YouTube broadcast is already mapped to another active stream job.", updated_at: new Date().toISOString() }).eq("id", job.id);
-          return NextResponse.json({ error: "The active YouTube broadcast is already mapped to another active stream job." }, { status: 409 });
-        }
-      }
-
-      if (mapping?.stream_job_id !== job.id) {
-        const { error: mappingUpsertError } = await admin.from("live_stream_mappings").upsert({
-          owner_id: authData.user.id,
-          platform: "youtube",
-          external_stream_id: active.broadcastId,
-          stream_job_id: job.id,
-          updated_at: new Date().toISOString(),
-        }, { onConflict: "owner_id,platform,external_stream_id" });
-        if (mappingUpsertError) throw mappingUpsertError;
+      const { data: claimed, error: claimError } = await admin.rpc("claim_live_stream_mapping", {
+        p_owner_id: authData.user.id,
+        p_platform: "youtube",
+        p_external_stream_id: active.broadcastId,
+        p_stream_job_id: job.id,
+      });
+      if (claimError) throw claimError;
+      if (claimed !== true) {
+        const message = "The active YouTube broadcast is already mapped to another active stream job.";
+        await admin.from("stream_jobs").update({ status: "error", error_message: message, updated_at: new Date().toISOString() }).eq("id", job.id);
+        return NextResponse.json({ error: message }, { status: 409 });
       }
 
       youtube = { externalStreamId: active.broadcastId, liveChatId: active.liveChatId, accessToken };
