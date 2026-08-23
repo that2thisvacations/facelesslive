@@ -20,6 +20,13 @@ type WorkerJob = {
   } | null;
 };
 
+class ReconciliationPersistenceError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ReconciliationPersistenceError";
+  }
+}
+
 const ACTIVE_STREAM_STATUSES = ["queued", "starting", "live"];
 const TERMINAL_YOUTUBE_STATUSES = new Set(["ended"]);
 const TERMINAL_YOUTUBE_ERROR_STATUSES = new Set(["error", "reauthorize"]);
@@ -30,6 +37,12 @@ function authorized(request: Request) {
   const secret = process.env.CRON_SECRET;
   if (!secret) return false;
   return request.headers.get("authorization") === `Bearer ${secret}`;
+}
+
+function persistError(context: string, error: { message?: string } | null) {
+  if (error) {
+    throw new ReconciliationPersistenceError(`${context}: ${error.message || "database write failed"}`);
+  }
 }
 
 function sanitizeHealth(job: WorkerJob) {
@@ -108,7 +121,7 @@ async function reconcile() {
             },
             updated_at: new Date().toISOString(),
           }).eq("id", row.id).eq("status", "queued");
-          if (pendingError) throw pendingError;
+          persistError(`Unable to persist dispatch-pending health for ${row.id}`, pendingError);
           summary.updated += 1;
           return;
         }
@@ -127,7 +140,7 @@ async function reconcile() {
           },
           updated_at: new Date().toISOString(),
         }).eq("id", row.id).in("status", ACTIVE_STREAM_STATUSES);
-        if (orphanError) throw orphanError;
+        persistError(`Unable to persist orphaned worker state for ${row.id}`, orphanError);
         return;
       }
       if (!response.ok) throw new Error(`Worker health returned ${response.status}.`);
@@ -140,7 +153,7 @@ async function reconcile() {
           ingestion_health: health,
           updated_at: new Date().toISOString(),
         }).eq("id", row.id);
-        if (updateError) throw updateError;
+        persistError(`Unable to persist YouTube health for ${row.id}`, updateError);
         summary.updated += 1;
       }
 
@@ -167,7 +180,7 @@ async function reconcile() {
           ingestion_health: endedHealth,
           updated_at: new Date().toISOString(),
         }).eq("id", row.id).in("status", ACTIVE_STREAM_STATUSES);
-        if (endedError) throw endedError;
+        persistError(`Unable to persist ended stream state for ${row.id}`, endedError);
         summary.ended += 1;
         return;
       }
@@ -195,11 +208,13 @@ async function reconcile() {
           },
           updated_at: new Date().toISOString(),
         }).eq("id", row.id).in("status", ACTIVE_STREAM_STATUSES);
-        if (terminalError) throw terminalError;
+        persistError(`Unable to persist terminal ingestion failure for ${row.id}`, terminalError);
         summary.errored += 1;
       }
     } catch (jobError) {
       summary.unavailable += 1;
+      if (jobError instanceof ReconciliationPersistenceError) throw jobError;
+
       const { error: healthError } = await admin.from("stream_jobs").update({
         ingestion_health: {
           ...previousHealth,
@@ -210,7 +225,7 @@ async function reconcile() {
         },
         updated_at: new Date().toISOString(),
       }).eq("id", row.id);
-      if (healthError) console.error("youtube_health_persist_failed", row.id, healthError.message);
+      persistError(`Unable to persist reconciliation error for ${row.id}`, healthError);
     }
   }));
 
