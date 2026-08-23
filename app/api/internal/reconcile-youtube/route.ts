@@ -102,7 +102,7 @@ async function reconcile() {
             checked_at: new Date().toISOString(),
           },
           updated_at: new Date().toISOString(),
-        }).eq("id", row.id);
+        }).eq("id", row.id).in("status", ACTIVE_STREAM_STATUSES);
         return;
       }
       if (!response.ok) throw new Error(`Worker health returned ${response.status}.`);
@@ -129,7 +129,7 @@ async function reconcile() {
           error_message: null,
           ingestion_health: health,
           updated_at: new Date().toISOString(),
-        }).eq("id", row.id);
+        }).eq("id", row.id).in("status", ACTIVE_STREAM_STATUSES);
         if (endedError) throw endedError;
         summary.ended += 1;
       }
